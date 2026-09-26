@@ -1,7 +1,4 @@
-"""Restricted Telegram ingestion for Italia Compete and OFF CLASS.
-
-The worker never sends Telegram messages and never performs social actions.
-"""
+"""Italia Compete and OFF CLASS ingestion plus the authorized Papà PDF routine."""
 import asyncio
 import fcntl
 import hashlib
@@ -351,29 +348,48 @@ async def main():
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     client = TelegramClient(str(ROOT / 'telegram'), int(os.environ['TG_API_ID']), os.environ['TG_API_HASH'], receive_updates=False)
     db = connect_db()
+    papa_task = None
     try:
         await client.connect()
         if not await client.is_user_authorized():
             status('telegram_authorization_required')
             await stopped.wait()
             return
-        storage = dropbox_client()
+        if os.environ.get('PAPA_ENABLED', 'true') == 'true':
+            from papa import service as papa_service
+            papa_task = asyncio.create_task(papa_service(client, db, stopped, status))
+        storage = None
         next_offclass = 0
-        status('worker_ready', offclass_enabled=os.environ.get('OFFCLASS_ENABLED') == 'true')
+        status('worker_ready', offclass_enabled=os.environ.get('OFFCLASS_ENABLED') == 'true',
+               papa_enabled=os.environ.get('PAPA_ENABLED', 'true') == 'true')
         while not stopped.is_set():
+            if papa_task and papa_task.done():
+                # Surface a failed daily routine while ingestion continues.
+                await papa_task
             try:
                 entities, offclass = await resolve_sources(client, db)
             except Exception as exc:
                 status('source_resolution_error', error_type=type(exc).__name__)
                 await pause(stopped, max(getattr(exc, 'seconds', 0), 60))
                 continue
-            if collection_window():
-                await collect_pdf_chats(client, storage, db, stopped, entities)
-            if os.environ.get('OFFCLASS_ENABLED') == 'true' and time.monotonic() >= next_offclass:
-                await collect_offclass(client, storage, db, stopped, offclass)
-                next_offclass = time.monotonic() + 900
+            try:
+                if collection_window():
+                    if storage is None:
+                        storage = dropbox_client()
+                    await collect_pdf_chats(client, storage, db, stopped, entities)
+                if os.environ.get('OFFCLASS_ENABLED') == 'true' and time.monotonic() >= next_offclass:
+                    if storage is None:
+                        storage = dropbox_client()
+                    await collect_offclass(client, storage, db, stopped, offclass)
+                    next_offclass = time.monotonic() + 900
+            except Exception as exc:
+                status('storage_error', error_type=type(exc).__name__)
             await pause(stopped, 900 if collection_window() else 60)
     finally:
+        stopped.set()
+        if papa_task:
+            papa_task.cancel()
+            await asyncio.gather(papa_task, return_exceptions=True)
         await client.disconnect()
         db.close()
         lock.close()

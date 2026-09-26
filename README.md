@@ -1,7 +1,35 @@
 # Italia Compete e OFF CLASS — Fonti Telegram
 
 Un solo worker Render riusa la sessione Telegram e il registro SQLite già presenti
-sul disco persistente `/var/data`. Non invia messaggi e non genera né pubblica post.
+sul disco persistente `/var/data`. Inoltra a Papà soltanto i quotidiani autorizzati;
+non genera né pubblica post.
+
+## Routine Papà — API Telegram (27 settembre 2026)
+
+`papa.py` usa il client Telegram già autenticato dal worker, sullo stesso disco
+persistente, senza browser, nuovi login o copie della sessione. È abilitata per
+default (`PAPA_ENABLED=false` la disabilita) e controlla ogni giorno alle 08:30
+Europe/Rome, a partire dal 27/09/2026. Un riavvio dopo le 08:30 recupera il
+controllo del giorno. Un risultato definitivo, anche con giornali mancanti,
+chiude la giornata; gli errori tecnici vengono riconciliati e registrati.
+
+Unico destinatario: utente privato Papà, ID 8836718451; unica fonte: Part 2,
+ID -1001295597629. Inoltra esclusivamente Corriere della Sera nazionale e
+Il Giorno Legnano/Legnano–Varese della data corrente, verificata nel nome PDF.
+Preferisce il Corriere definitivo disponibile. Ogni chiamata contiene un solo
+messaggio e un solo destinatario; non espande album e non scarica file.
+
+Prima di ciascun invio controlla la cronologia del destinatario. SQLite conserva
+ogni tentativo prima dell'invio, un random_id e l'ID del messaggio verificato.
+Un esito incerto viene cercato in cronologia ma non reinviato automaticamente.
+La protezione Telegram all'inoltro viene rispettata. Nessun avviso WhatsApp è
+incluso: l'integrazione WhatsApp Business resta da configurare separatamente.
+
+Log: `papa_api_ready` certifica accesso a fonte e identità destinatario;
+`papa_forward_verified` certifica la presenza del singolo documento;
+`papa_daily_result` riporta presenti/mancanti; `papa_result_uncertain` richiede
+verifica. Un deploy riuscito, da solo, non certifica l'invio dei quotidiani.
+Test: `python -m unittest discover -s tests -p 'test_papa.py' -v`.
 
 ## Fonti e destinazioni
 

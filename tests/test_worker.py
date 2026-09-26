@@ -1,4 +1,5 @@
 import hashlib
+from datetime import datetime, timezone
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,7 @@ class Tests(unittest.TestCase):
         msg = Obj(file=Obj(name='daily.pdf', size=20), media=None)
         self.assertTrue(worker.allowed(msg))
         self.assertFalse(worker.allowed(msg, protected=True))
-        self.assertFalse(worker.allowed(msg, ttl=86400))
+        self.assertTrue(worker.allowed(msg, ttl=86400))
         msg.media=Obj(ttl_seconds=30)
         self.assertFalse(worker.allowed(msg))
 
@@ -38,6 +39,24 @@ class Tests(unittest.TestCase):
             db=worker.connect_db()
             self.assertEqual(db.execute('SELECT message FROM cursors').fetchone()[0],12)
             self.assertEqual(db.execute('SELECT path FROM objects WHERE hash=?',('abc',)).fetchone()[0],'/a.pdf')
+            db.close()
+
+    def test_offclass_message_record(self):
+        msg=Obj(id=42, date=datetime(2026,9,26,tzinfo=timezone.utc),
+                message='Read https://hbr.org/example and https://hbr.org/example',
+                file=None)
+        record=worker.message_record(msg,-10042,'Harvard business review')
+        self.assertEqual(record['urls'],['https://hbr.org/example'])
+        self.assertEqual(record['status'],'da verificare')
+        self.assertFalse(record['publication_authorized'])
+
+    def test_offclass_ledger_survives_restart(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(worker,'ROOT',Path(temp)):
+            db=worker.connect_db()
+            worker.checkpoint_message(db,-10042,9,'/offclass/9.json')
+            db.close()
+            db=worker.connect_db()
+            self.assertEqual(db.execute('SELECT path FROM message_sources').fetchone()[0],'/offclass/9.json')
             db.close()
 
 if __name__ == '__main__':

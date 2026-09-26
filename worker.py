@@ -154,9 +154,14 @@ async def resolve_sources(client, db):
     """Resolve fixed Italia Compete IDs and the exact OFF CLASS title."""
     entities = {}
     candidates = []
+    related = []
     binding = db.execute('SELECT chat FROM offclass_binding WHERE id=1').fetchone()
     pinned = int(os.environ.get('OFFCLASS_CHAT_ID') or (binding[0] if binding else 0))
     async for dialog in client.iter_dialogs():
+        import unicodedata
+        normalized = unicodedata.normalize('NFKC', dialog.name or '').casefold()
+        if 'harvard' in normalized or re.search(r'\bhbr\b', normalized):
+            related.append({'chat_id': dialog.id, 'title': dialog.name})
         if dialog.id in PDF_CHATS:
             entities[dialog.id] = dialog.entity
         if (pinned and dialog.id == pinned) or (not pinned and
@@ -164,6 +169,8 @@ async def resolve_sources(client, db):
             candidates.append((dialog.id, dialog.entity, dialog.name))
     # Never guess among identically named chats.
     offclass = candidates[0] if len(candidates) == 1 else None
+    if not offclass and os.environ.get('OFFCLASS_ENABLED') == 'true':
+        status('offclass_resolution_needed', exact_matches=len(candidates), related=related)
     if offclass and not binding:
         start = os.environ.get('OFFCLASS_START_FROM') or day_start().isoformat()
         parsed = datetime.fromisoformat(start)

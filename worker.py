@@ -14,7 +14,8 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(os.environ.get('DATA_DIR', '/var/data'))
 CHATS = {-1001295597629: 'Part2', -1001302683686: 'Economaniacs'}
-LIMIT = 100 * 1024 * 1024
+LIMIT = 200 * 1024 * 1024
+UPLOAD_CHUNK = 8 * 1024 * 1024
 
 
 def content_hash(path):
@@ -30,7 +31,8 @@ def pdf_name(name):
 
 
 def allowed(message, protected=False, ttl=0):
-    if protected or ttl or getattr(message, 'noforwards', False) or getattr(message, 'ttl_period', None):
+    # Chat auto-delete is distinct from protected or self-destructing media.
+    if protected or getattr(message, 'noforwards', False):
         return False
     media = getattr(message, 'media', None)
     if getattr(media, 'ttl_seconds', None):
@@ -72,13 +74,29 @@ def ensure_remote(client, path, local):
     except dropbox.exceptions.ApiError as exc:
         if not (exc.error.is_path() and exc.error.get_path().is_not_found()):
             raise
-        with open(local, 'rb') as source:
-            client.files_upload(source.read(), path, mode=dropbox.files.WriteMode.add,
-                                autorename=False, strict_conflict=True, mute=True)
+        upload_file(client, path, local)
         meta = client.files_get_metadata(path)
     if getattr(meta, 'content_hash', None) != digest or getattr(meta, 'size', None) != Path(local).stat().st_size:
         raise RuntimeError('RemoteFileMismatch')
     return digest
+
+
+def upload_file(client, path, local):
+    import dropbox
+    commit = dropbox.files.CommitInfo(path=path, mode=dropbox.files.WriteMode.add,
+                                    autorename=False, strict_conflict=True, mute=True)
+    with open(local, 'rb') as source:
+        started = client.files_upload_session_start(source.read(UPLOAD_CHUNK))
+        cursor = dropbox.files.UploadSessionCursor(session_id=started.session_id, offset=source.tell())
+        while chunk := source.read(UPLOAD_CHUNK):
+            client.files_upload_session_append_v2(chunk, cursor)
+            cursor.offset = source.tell()
+        client.files_upload_session_finish(b'', cursor, commit)
+
+
+def day_start(now=None):
+    local = (now or datetime.now(ZoneInfo('Europe/Rome'))).astimezone(ZoneInfo('Europe/Rome'))
+    return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def dropbox_client():
@@ -110,18 +128,25 @@ async def collect(client, storage, db, stopped):
             full = await client(functions.channels.GetFullChannelRequest(entity))
             protected = bool(getattr(entity, 'noforwards', False))
             ttl = getattr(full.full_chat, 'ttl_period', 0)
-            if protected or ttl:
-                status('source_restricted', chat=chat)
+            if protected:
+                status('source_restricted', chat=chat, reason='content_protection')
                 continue
-            row = db.execute('SELECT message FROM cursors WHERE chat=?', (chat,)).fetchone()
-            params = {'min_id': row[0]} if row else {'offset_date': datetime.fromisoformat(os.environ['START_FROM'])}
+            status('source_started', chat=chat, auto_delete_seconds=ttl or 0)
+            # Revisit today's skips, including PDFs excluded by the old size limit.
+            params = {'offset_date': day_start()}
             async for msg in client.iter_messages(entity, reverse=True, **params):
                 if stopped.is_set():
                     return
+                if msg.date < day_start():
+                    continue
+                prior = db.execute('SELECT state FROM sources WHERE chat=? AND message=?', (chat, msg.id)).fetchone()
+                if prior and prior[0] == 'verified':
+                    continue
                 if not allowed(msg):
                     checkpoint(db, chat, msg.id)
                     continue
                 with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+                    status('file_downloading', chat=chat, message=msg.id, bytes=msg.file.size)
                     local = Path(temp) / 'source.pdf'
                     await client.download_media(msg, file=str(local))
                     if local.stat().st_size != msg.file.size or local.stat().st_size > LIMIT:

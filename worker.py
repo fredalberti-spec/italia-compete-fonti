@@ -1,4 +1,7 @@
-"""Italia Compete: restricted PDF ingestion. No message sending or social actions."""
+"""Restricted Telegram ingestion for Italia Compete and OFF CLASS.
+
+The worker never sends Telegram messages and never performs social actions.
+"""
 import asyncio
 import fcntl
 import hashlib
@@ -8,12 +11,14 @@ import re
 import signal
 import sqlite3
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ROOT = Path(os.environ.get('DATA_DIR', '/var/data'))
-CHATS = {-1001295597629: 'Part2', -1001302683686: 'Economaniacs'}
+PDF_CHATS = {-1001295597629: 'Part2', -1001302683686: 'Economaniacs'}
+OFFCLASS_CHAT_TITLE = os.environ.get('OFFCLASS_CHAT_TITLE', 'Harvard business review')
 LIMIT = 200 * 1024 * 1024
 UPLOAD_CHUNK = 8 * 1024 * 1024
 
@@ -28,6 +33,30 @@ def content_hash(path):
 
 def pdf_name(name):
     return re.sub(r'[^\w. -]', '_', Path(name).name)[:140]
+
+
+def message_record(message, chat_id, chat_title):
+    """Return the minimal immutable source record kept for OFF CLASS."""
+    text = (getattr(message, 'message', '') or '').strip()
+    urls = sorted(set(re.findall(r'https?://[^\s<>]+', text)))
+    urls = sorted(set(urls + [e.url for e in (getattr(message, 'entities', None) or [])
+                             if getattr(e, 'url', '').startswith(('https://', 'http://'))]))
+    return {
+        'source': 'Telegram',
+        'chat_id': chat_id,
+        'chat_title': chat_title,
+        'message_id': message.id,
+        'message_date': message.date.isoformat() if message.date else None,
+        'text': text,
+        'urls': urls,
+        'has_pdf': bool(getattr(message, 'file', None) and
+                        getattr(message.file, 'name', '') and
+                        message.file.name.lower().endswith('.pdf')),
+        'status': 'da verificare',
+        'publication_authorized': False,
+        'automatic_ingestion_authorized': True,
+        'automatic_content_generation_authorized': False,
+    }
 
 
 def allowed(message, protected=False, ttl=0):
@@ -55,6 +84,9 @@ def connect_db():
     db.execute('CREATE TABLE IF NOT EXISTS cursors (chat INTEGER PRIMARY KEY, message INTEGER NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS sources (chat INTEGER, message INTEGER, hash TEXT, path TEXT, state TEXT, PRIMARY KEY(chat,message))')
     db.execute('CREATE TABLE IF NOT EXISTS objects (hash TEXT PRIMARY KEY, path TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS message_sources (chat INTEGER, message INTEGER, path TEXT, state TEXT, PRIMARY KEY(chat,message))')
+    db.execute('CREATE TABLE IF NOT EXISTS offclass_binding (id INTEGER PRIMARY KEY CHECK(id=1), chat INTEGER NOT NULL, start TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS offclass_objects (hash TEXT PRIMARY KEY, path TEXT NOT NULL)')
     return db
 
 
@@ -64,6 +96,12 @@ def checkpoint(db, chat, message, digest='', path='', state='skipped'):
         db.execute('INSERT OR REPLACE INTO cursors VALUES (?,?)', (chat, message))
         if digest:
             db.execute('INSERT OR REPLACE INTO objects VALUES (?,?)', (digest, path))
+
+
+def checkpoint_message(db, chat, message, path, state='verified'):
+    with db:
+        db.execute('INSERT OR REPLACE INTO message_sources VALUES (?,?,?,?)',
+                   (chat, message, path, state))
 
 
 def ensure_remote(client, path, local):
@@ -112,16 +150,33 @@ def dropbox_client():
     return client.with_path_root(dropbox.common.PathRoot.namespace_id(os.environ['DROPBOX_NAMESPACE_ID']))
 
 
-async def collect(client, storage, db, stopped):
-    from telethon import functions, types
-    # Resolve only known chat IDs; dialogs are needed to obtain their access hashes.
+async def resolve_sources(client, db):
+    """Resolve fixed Italia Compete IDs and the exact OFF CLASS title."""
     entities = {}
+    candidates = []
+    binding = db.execute('SELECT chat FROM offclass_binding WHERE id=1').fetchone()
+    pinned = int(os.environ.get('OFFCLASS_CHAT_ID') or (binding[0] if binding else 0))
     async for dialog in client.iter_dialogs():
-        if dialog.id in CHATS:
+        if dialog.id in PDF_CHATS:
             entities[dialog.id] = dialog.entity
-        if len(entities) == len(CHATS):
-            break
-    for chat, label in CHATS.items():
+        if (pinned and dialog.id == pinned) or (not pinned and
+                dialog.name.strip().casefold() == OFFCLASS_CHAT_TITLE.strip().casefold()):
+            candidates.append((dialog.id, dialog.entity, dialog.name))
+    # Never guess among identically named chats.
+    offclass = candidates[0] if len(candidates) == 1 else None
+    if offclass and not binding:
+        start = os.environ.get('OFFCLASS_START_FROM') or day_start().isoformat()
+        parsed = datetime.fromisoformat(start)
+        if not parsed.tzinfo:
+            raise ValueError('OffclassStartNeedsTimezone')
+        with db:
+            db.execute('INSERT INTO offclass_binding VALUES (1,?,?)', (offclass[0], start))
+    return entities, offclass
+
+
+async def collect_pdf_chats(client, storage, db, stopped, entities):
+    from telethon import functions, types
+    for chat, label in PDF_CHATS.items():
         if stopped.is_set():
             return
         try:
@@ -178,6 +233,90 @@ async def collect(client, storage, db, stopped):
                 await pause(stopped, max(int(exc.seconds), 1))
 
 
+async def collect_offclass(client, storage, db, stopped, source):
+    """Archive new HBR messages as source records and any permitted PDFs."""
+    if not source or stopped.is_set():
+        status('offclass_source_error', source=OFFCLASS_CHAT_TITLE,
+               error_type='ChatUnavailable')
+        return
+    chat, entity, title = source
+    try:
+        if getattr(entity, 'noforwards', False):
+            status('offclass_source_restricted', chat=chat)
+            return
+        import dropbox
+        storage = storage.with_path_root(dropbox.common.PathRoot.namespace_id(
+            os.environ['OFFCLASS_DROPBOX_NAMESPACE_ID']))
+        base = os.environ['OFFCLASS_DROPBOX_BASE'].rstrip('/')
+        # A successful read proves access to the intended archive namespace.
+        await asyncio.to_thread(storage.files_get_metadata, base)
+        config = {'project': 'OFF CLASS', 'chat_id': chat, 'configured_title': OFFCLASS_CHAT_TITLE,
+                  'poll_interval_seconds': 900, 'publish_social': False,
+                  'generate_posts': False}
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            local = Path(temp) / 'connection.json'
+            local.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
+            await asyncio.to_thread(ensure_remote, storage, f'{base}/collegamento-{chat}.json', local)
+        prior = db.execute('SELECT MAX(message) FROM message_sources WHERE chat=?',
+                           (chat,)).fetchone()[0]
+        params = {'reverse': True, 'limit': 100}
+        if prior:
+            params['min_id'] = prior
+        else:
+            # First activation starts with the current local day; older history
+            # is acquired only through an explicit, separate backfill.
+            start = db.execute('SELECT start FROM offclass_binding WHERE id=1').fetchone()[0]
+            params['offset_date'] = datetime.fromisoformat(start)
+        added = 0
+        async for msg in client.iter_messages(entity, **params):
+            if stopped.is_set():
+                return
+            if getattr(msg, 'noforwards', False) or getattr(getattr(msg, 'media', None), 'ttl_seconds', None):
+                checkpoint_message(db, chat, msg.id, '', 'restricted')
+                continue
+            record = message_record(msg, chat, title)
+            # Ignore empty service events; retain text/link messages and PDFs.
+            if not record['text'] and not record['has_pdf']:
+                checkpoint_message(db, chat, msg.id, '', 'skipped')
+                continue
+            stem = f"{msg.date.astimezone(ZoneInfo('Europe/Rome')):%Y%m%d-%H%M}-{msg.id}"
+            record['pdf_status'] = 'absent'
+            if record['has_pdf'] and allowed(msg):
+                with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+                    local = Path(temp) / 'source.pdf'
+                    await client.download_media(msg, file=str(local))
+                    with local.open('rb') as check:
+                        valid_pdf = check.read(5) == b'%PDF-'
+                    if local.stat().st_size != msg.file.size or not valid_pdf:
+                        raise RuntimeError('IncompleteOrInvalidPDF')
+                    digest = content_hash(local)
+                    # Content-addressed files survive retries and reposts without duplicates.
+                    pdf_path = f"{base}/PDF/{digest}.pdf"
+                    await asyncio.to_thread(ensure_remote, storage, pdf_path, local)
+                    record.update(pdf_path=pdf_path, pdf_hash=digest, pdf_name=msg.file.name,
+                                  pdf_status='integrity_verified')
+                    with db:
+                        db.execute('INSERT OR REPLACE INTO offclass_objects VALUES (?,?)', (digest, pdf_path))
+            elif record['has_pdf']:
+                record['pdf_status'] = 'not_acquired_size_or_format'
+            payload = json.dumps(record, ensure_ascii=False, indent=2).encode('utf-8')
+            revision = hashlib.sha256(payload).hexdigest()[:16]
+            record_path = f'{base}/Schede messaggio/{stem}-{revision}.json'
+            with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+                local_record = Path(temp) / 'message.json'
+                local_record.write_bytes(payload)
+                await asyncio.to_thread(ensure_remote, storage, record_path, local_record)
+            checkpoint_message(db, chat, msg.id, record_path)
+            added += 1
+            status('offclass_source_verified', chat=chat, message=msg.id)
+        status('offclass_source_checked', chat=chat, acquired=added,
+               next_check_seconds=900, archive=base)
+    except Exception as exc:
+        status('offclass_source_error', chat=chat, error_type=type(exc).__name__)
+        if hasattr(exc, 'seconds'):
+            await pause(stopped, max(int(exc.seconds), 1))
+
+
 async def pause(stopped, seconds):
     try:
         await asyncio.wait_for(stopped.wait(), timeout=seconds)
@@ -207,12 +346,21 @@ async def main():
             await stopped.wait()
             return
         storage = dropbox_client()
+        next_offclass = 0
+        status('worker_ready', offclass_enabled=os.environ.get('OFFCLASS_ENABLED') == 'true')
         while not stopped.is_set():
+            try:
+                entities, offclass = await resolve_sources(client, db)
+            except Exception as exc:
+                status('source_resolution_error', error_type=type(exc).__name__)
+                await pause(stopped, max(getattr(exc, 'seconds', 0), 60))
+                continue
             if collection_window():
-                await collect(client, storage, db, stopped)
-                await pause(stopped, 900)
-            else:
-                await pause(stopped, 60)
+                await collect_pdf_chats(client, storage, db, stopped, entities)
+            if os.environ.get('OFFCLASS_ENABLED') == 'true' and time.monotonic() >= next_offclass:
+                await collect_offclass(client, storage, db, stopped, offclass)
+                next_offclass = time.monotonic() + 900
+            await pause(stopped, 900 if collection_window() else 60)
     finally:
         await client.disconnect()
         db.close()

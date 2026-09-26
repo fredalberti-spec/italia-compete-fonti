@@ -33,3 +33,13 @@ services:
         value: '2166447024'
       - key: DROPBOX_BASE
         value: /Projects/Italia Compete/Gestione editoriale/Fonti Telegram
+      - key: OFFCLASS_CHAT_TITLE
+        value: Harvard business review
+      - key: OFFCLASS_DROPBOX_BASE
+        value: /Off Class/01 fonti originali/Telegram Harvard Business Review
+      - key: OFFCLASS_DROPBOX_NAMESPACE_ID
+        value: '13529493'
+      - key: OFFCLASS_START_FROM
+        value: '2026-09-26T00:00:00+02:00'
+      - key: OFFCLASS_ENABLED
+        value: 'true'

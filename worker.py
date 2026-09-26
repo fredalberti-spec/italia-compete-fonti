@@ -99,6 +99,11 @@ def day_start(now=None):
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def collection_window(now=None):
+    local = (now or datetime.now(ZoneInfo('Europe/Rome'))).astimezone(ZoneInfo('Europe/Rome'))
+    return 8 <= local.hour < 12
+
+
 def dropbox_client():
     import dropbox
     saved = json.loads((ROOT / 'dropbox.json').read_text())
@@ -136,6 +141,9 @@ async def collect(client, storage, db, stopped):
             params = {'offset_date': day_start()}
             async for msg in client.iter_messages(entity, reverse=True, **params):
                 if stopped.is_set():
+                    return
+                if not collection_window():
+                    status('collection_window_closed')
                     return
                 if msg.date < day_start():
                     continue
@@ -200,8 +208,11 @@ async def main():
             return
         storage = dropbox_client()
         while not stopped.is_set():
-            await collect(client, storage, db, stopped)
-            await pause(stopped, 900)
+            if collection_window():
+                await collect(client, storage, db, stopped)
+                await pause(stopped, 900)
+            else:
+                await pause(stopped, 60)
     finally:
         await client.disconnect()
         db.close()

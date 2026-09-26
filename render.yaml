@@ -9,7 +9,7 @@ services:
     autoDeployTrigger: 'off'
     buildCommand: pip install -r requirements.txt
     startCommand: python worker.py
-    maxShutdownDelaySeconds: 300
+   
     disk:
       name: session-and-ledger
       mountPath: /var/data

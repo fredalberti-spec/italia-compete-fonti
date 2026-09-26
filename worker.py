@@ -161,7 +161,12 @@ async def resolve_sources(client, db):
         import unicodedata
         normalized = unicodedata.normalize('NFKC', dialog.name or '').casefold()
         if 'harvard' in normalized or re.search(r'\bhbr\b', normalized):
-            related.append({'chat_id': dialog.id, 'title': dialog.name})
+            latest = getattr(dialog, 'message', None)
+            related.append({'chat_id': dialog.id, 'title': dialog.name,
+                            'username': getattr(dialog.entity, 'username', None),
+                            'latest_date': str(getattr(latest, 'date', '')),
+                            'latest_links': re.findall(r'https?://[^\s<>]+',
+                                getattr(latest, 'message', '') or '')[:5]})
         if dialog.id in PDF_CHATS:
             entities[dialog.id] = dialog.entity
         if (pinned and dialog.id == pinned) or (not pinned and

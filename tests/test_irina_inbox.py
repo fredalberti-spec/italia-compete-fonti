@@ -30,6 +30,7 @@ class FakeWA:
         self.fail = False
         self.contact_sent = []
         self.templates = []
+        self.voices = []
     def reply(self, text, context, recipient):
         self.sent.append((text,context,recipient))
         if self.fail:
@@ -45,18 +46,27 @@ class FakeWA:
         path = folder/'original.ogg'
         path.write_bytes(b'voice')
         return path
+    def voice_reply(self,audio,context,recipient):
+        self.voices.append((audio.name,context,recipient))
+        return 'voice_' + context
 
 
 class FakeAI:
     def __init__(self):
         self.calls = 0
         self.transcriptions = 0
+        self.speeches = []
     def transcribe(self, attachment):
         self.transcriptions += 1
         return 'Per Italia Compete: appunti sulla produttivita'
     def answer(self, *args):
         self.calls += 1
         return 'Sintesi del materiale.'
+    def speech(self,text,folder,italian=True):
+        self.speeches.append((text,italian))
+        path=folder/'assistant-voice.ogg'
+        path.write_bytes(b'voice reply')
+        return path
 
 
 class FakeArchive:
@@ -168,6 +178,14 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(self.row()['project'],'italia_compete')
         self.assertTrue((self.archive.saved[0][2]/'original.ogg').exists())
         self.assertTrue((self.archive.saved[0][2]/'transcript.txt').exists())
+
+    def test_explicit_voice_request_uses_selected_profile_transport(self):
+        self.receive(payload(text='Rispondimi con un vocale in inglese'))
+        self.proc.step()
+        self.assertEqual(self.ai.speeches,[('Sintesi del materiale.',False)])
+        self.assertEqual(self.wa.voices,[('assistant-voice.ogg','message1',OWNER)])
+        self.assertEqual(self.wa.sent,[])
+        self.assertEqual(self.row()['state'],'accepted')
 
     def test_forwarded_material_not_treated_as_owner_instruction(self):
         self.receive(payload(context={'forwarded':True}))

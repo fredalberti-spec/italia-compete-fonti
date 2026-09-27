@@ -114,6 +114,30 @@ class WhatsApp:
             raise ValueError('NoWhatsAppMessageId')
         return mid
 
+    def voice_reply(self, audio, context, recipient):
+        if recipient not in self.owners:
+            raise ValueError('VoiceRecipientNotOwner')
+        boundary = 'Irina' + uuid.uuid4().hex
+        data = (f'--{boundary}\r\nContent-Disposition: form-data; name="messaging_product"\r\n\r\n'
+                f'whatsapp\r\n--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                f'filename="irina.ogg"\r\nContent-Type: audio/ogg\r\n\r\n').encode() + \
+               audio.read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
+        uploaded = json.loads(request('https://graph.facebook.com/v23.0/' + PHONE_ID + '/media',
+                                      self.token, data, 'multipart/form-data; boundary=' + boundary))
+        mid = uploaded.get('id')
+        if not mid:
+            raise ValueError('NoWhatsAppMediaId')
+        payload = {'messaging_product':'whatsapp', 'recipient_type':'individual', 'to':recipient,
+                   'type':'audio', 'audio':{'id':mid, 'voice':True}}
+        if context:
+            payload['context'] = {'message_id':context}
+        result = json_request('https://graph.facebook.com/v23.0/' + PHONE_ID + '/messages',
+                              self.token, payload)
+        sent = result.get('messages',[{}])[0].get('id')
+        if not sent:
+            raise ValueError('NoWhatsAppMessageId')
+        return sent
+
     def relay_template(self, recipient, sender, preview, reference):
         from irina_inbox import WABA_ID
         if recipient not in self.owners:
@@ -211,6 +235,31 @@ class Intelligence:
         if not answer:
             raise ValueError('EmptyAssistantAnswer')
         return answer[:3200]
+
+    def speech(self, text, folder, italian=True):
+        wav, ogg = folder/'assistant-voice.wav', folder/'assistant-voice.ogg'
+        pronunciation = ('Speak fluent, intelligible Italian with a clearly noticeable General American accent '
+            'throughout, like an adult American native speaker who learned Italian well. Use an American rhotic R, '
+            'American vowel coloring and American intonation. Keep every word in Italian. '
+            if italian else
+            'Speak natural American English with a clear General American accent. ')
+        instructions = ('Use an original youthful adult feminine voice, light and medium-high pitched, softly airy '
+            'and warmly conversational. Be calm, understated and gently intimate, with smooth phrasing and natural '
+            'pauses. Avoid a deep chesty register, gravel, heavy vocal fry or exaggerated whispering. Do not imitate '
+            'any real person or celebrity. Pronounce Irina Merovan as ee-REE-nuh meh-ROH-vuhn, stressing REE and ROH. '
+            + pronunciation)
+        result = request('https://api.openai.com/v1/audio/speech', self.token,
+            json.dumps({'model':'gpt-4o-mini-tts','voice':'shimmer','input':text[:3500],
+                        'instructions':instructions,'response_format':'wav'}).encode())
+        wav.write_bytes(result)
+        subprocess.run(['ffmpeg','-nostdin','-v','error','-y','-i',str(wav),'-c:a','libopus',
+                        '-ac','1','-ar','48000','-b:a','32k',str(ogg)], check=True, timeout=180,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        duration = float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration',
+                         '-of','default=noprint_wrappers=1:nokey=1',str(ogg)], timeout=20))
+        if not 0 < duration <= 180 or ogg.stat().st_size > MAX_MEDIA:
+            raise ValueError('GeneratedVoiceInvalid')
+        return ogg
 
 
 class Archive:
@@ -380,6 +429,24 @@ class Processor:
             return
         self.inbox.update(row['id'], state=success, reply_id=mid)
 
+    def send_voice(self, row, text, folder, italian=True, success='accepted'):
+        if row['actor'] != 'owner':
+            raise ValueError('ContactCannotReceiveAutomaticReply')
+        if self.now() - row['stamp'] >= 23*3600 + 55*60:
+            self.inbox.update(row['id'], state='reply_window_closed', result=text)
+            return
+        self.inbox.update(row['id'], state='sending', result=text)
+        try:
+            audio = self.ai.speech(text, folder, italian=italian)
+            mid = self.whatsapp.voice_reply(audio, row['id'], row['sender'])
+        except APIError as exc:
+            self.inbox.update(row['id'], state='rejected' if 400 <= exc.status < 500 else 'uncertain', error='VoiceAPIError')
+            return
+        except Exception:
+            self.inbox.update(row['id'], state='uncertain', error='VoiceSendUncertain')
+            return
+        self.inbox.update(row['id'], state=success, reply_id=mid)
+
     def process(self, row):
         message = json.loads(row['payload'])
         kind = message.get('type')
@@ -446,7 +513,13 @@ class Processor:
         remote = self.archive.save(row, folder, text, answer)
         self.inbox.update(row['id'], archive=remote)
         # Keep archive paths and note IDs in the journal, not in conversational replies.
-        self.send(row, answer)
+        voice_requested = bool(re.search(r'\b(?:rispondimi|parlami|mandami|inviami|fammi)\b.{0,25}\b(?:vocale|audio|voce)\b',
+                                         text, re.I|re.S))
+        if voice_requested:
+            italian = not bool(re.search(r'\b(?:in|speak|answer in)\s+(?:inglese|english)\b', text, re.I))
+            self.send_voice(row, answer, folder, italian=italian)
+        else:
+            self.send(row, answer)
 
     def prune_mirrored_media(self):
         # Only local working copies whose exact contents have already been verified in Dropbox.

@@ -273,5 +273,6 @@ def run(processor, stop_event):
         try:
             reader.step()
         except Exception as exc:
-            print(json.dumps({'event': 'irina_email_poll_error', 'error_type': type(exc).__name__}), flush=True)
+            print(json.dumps({'event': 'irina_email_poll_error', 'error_type': type(exc).__name__,
+                              'http_status': exc.status if isinstance(exc, APIError) else None}), flush=True)
         stop_event.wait(10)

@@ -7,6 +7,7 @@ import asyncio
 import secrets
 import unicodedata
 import re
+import papa_whatsapp
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -182,7 +183,7 @@ async def run_day(client, db, day, report, slot='08:30'):
     report('papa_daily_result', day=key, slot=slot, final=(slot == '09:30'),
            result=result, sent=sent,
            present=sorted(present), missing=missing, recipient=DESTINATION,
-           whatsapp='not_configured')
+           whatsapp='check_following_whatsapp_event' if papa_whatsapp.enabled() else 'disabled')
 
 
 def check_window(now):
@@ -200,7 +201,21 @@ def scheduled_slot(now):
 async def run_scheduled(client, db, now, report):
     slot = scheduled_slot(now)
     if slot:
-        await run_day(client, db, now.astimezone(ROME).date(), report, slot)
+        day = now.astimezone(ROME).date()
+        try:
+            await run_day(client, db, day, report, slot)
+        finally:
+            if papa_whatsapp.enabled():
+                try:
+                    # Re-read the destination with the SAME Telegram client;
+                    # no notice based only on a cached ledger or attempted forward.
+                    _, dest = await resolve(client)
+                    present = await recent_papers(client, dest, day, outgoing=True)
+                    await papa_whatsapp.notify(db, day, slot, present, report)
+                except Exception as exc:
+                    # WhatsApp failure must never break Telegram or its scheduler.
+                    report('papa_whatsapp_blocked', day=day.isoformat(), slot=slot,
+                           reason='verification_or_notification_error', error_type=type(exc).__name__)
 
 
 async def check_available(client, day, report):
@@ -214,6 +229,12 @@ async def check_available(client, day, report):
 
 async def service(client, db, stopped, report):
     setup(db)
+    papa_whatsapp.setup(db)
+    report('papa_whatsapp_ready', enabled=papa_whatsapp.enabled(),
+           token_configured=bool(papa_whatsapp.os.environ.get('IRINA_WHATSAPP_TOKEN')),
+           recipient='papa_pinned', sender=papa_whatsapp.SENDER,
+           introduction_once=True, max_notices_per_day=1,
+           delivery_tracking='api_acceptance_only')
     retry_after = 0
     next_check = 0
     try:

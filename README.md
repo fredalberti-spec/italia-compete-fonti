@@ -118,3 +118,39 @@ intervento umano; il collegamento persistente non è una garanzia contro revoche
 
 I test coprono hash, upload ambiguo, persistenza, protezione delle fonti, link,
 PDF ripubblicati, ripresa dopo errore e riconoscimento univoco della chat.
+
+### Papà: avviso WhatsApp da Irina
+
+`papa_whatsapp.py` aggiunge un avviso via WhatsApp Cloud API, dopo una nuova
+lettura della chat Telegram destinataria con il client già attivo. Nessun invio
+WhatsApp se non è verificato presente almeno un quotidiano corretto del giorno.
+Gli invii Telegram restano alle 08:30 e 09:30 Europe/Rome.
+
+Configurazione Render (mai nel repository):
+- `PAPA_WHATSAPP_ENABLED=true` per abilitare gli avvisi.
+- `IRINA_WHATSAPP_TOKEN`: token del system user Irina con scope messaging e management.
+- `PAPA_WHATSAPP_TO`: numero internazionale di Papà già verificato, confrontato con
+  un digest fisso; un destinatario diverso viene rifiutato.
+
+Il mittente e il WABA sono fissati al profilo Irina. Vengono controllati nome,
+numero, stato CONNECTED e testo esatto del modello italiano APPROVED prima di
+ogni avviso. I modelli `papa_irina_benvenuto_v1` e
+`papa_irina_quotidiani_{a,b,c}_v1` sono definiti nel modulo e sottoposti a Meta.
+Il primo si presenta come assistente digitale di Fred; i successivi ruotano,
+senza ripetere consecutivamente la stessa variante. La variabile contiene solo
+le testate effettivamente presenti, mai il giornale mancante.
+
+`papa_whatsapp_notices` nello stesso SQLite su disco persistente limita a un
+avviso al giorno anche tra i due slot e dopo un riavvio. La prenotazione viene
+salvata prima del POST. Timeout o crash lasciano uno stato incerto che non viene
+reinviato. Un'introduzione incerta blocca anche gli avvisi successivi finché non
+viene riconciliata manualmente. Un rifiuto esplicito non viene ritentato nello
+stesso giorno. Un modello non ancora approvato non prenota il giorno e può
+essere ricontrollato al secondo slot. Nessun fallback a WhatsApp Web.
+
+Log: `papa_whatsapp_ready`, `papa_whatsapp_accepted`, `papa_whatsapp_blocked`,
+`papa_whatsapp_rejected`, `papa_whatsapp_uncertain`.
+`accepted` significa richiesta accettata da Meta con ID messaggio, NON consegna
+né lettura; non è ancora presente un ricevitore webhook per verificarle.
+Approvazione dei modelli, configurazione account e fatturazione Meta restano
+prerequisiti della consegna; gli errori WhatsApp non interrompono Telegram.

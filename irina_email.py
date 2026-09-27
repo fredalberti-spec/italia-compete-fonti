@@ -116,6 +116,7 @@ class EmailProcessor:
         self.p, self.inbox, self.api = processor, processor.inbox, api
         self.domain, self.owners, self.now = domain.lower(), set(owners), now
         self.next_poll = 0
+        self.next_review = 0
         self.logged_poll = False
         with self.inbox.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS email_jobs ('
@@ -228,6 +229,13 @@ class EmailProcessor:
                           'attachments_saved': len(attachments), 'attachments_skipped': len(skipped)}), flush=True)
 
     def notify(self):
+        # Fred does not want WhatsApp receipts for mail from his registered addresses.
+        # Suppressing a receipt does not grant authentication or permission to process.
+        with self.inbox.db() as db:
+            for sender in self.owners:
+                db.execute("UPDATE email_jobs SET state='owner_notice_suppressed' "
+                           "WHERE state='notice_pending' AND ('resend:' || id) IN "
+                           "(SELECT id FROM inbox WHERE sender=?)", (sender,))
         # Only real inbound WhatsApp messages open its 24h window. Email never does.
         if self.now() - self.inbox.owner_last_seen(self.p.primary) >= 23*3600 + 55*60:
             return False
@@ -255,6 +263,13 @@ class EmailProcessor:
         return True
 
     def step(self):
+        if self.now() >= self.next_review:
+            self.next_review = self.now() + 60
+            try:
+                from irina_email_review import reconcile
+                reconcile(self)
+            except Exception as exc:
+                print(json.dumps({'event':'irina_email_review_error','error_type':type(exc).__name__}), flush=True)
         self.notify()
         if self.now() >= self.next_poll:
             self.next_poll = self.now() + 60

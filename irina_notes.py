@@ -192,7 +192,18 @@ def run(index, stop):
         try:
             index.sync(stop)
         except Exception as exc:
-            print(json.dumps({'event':'irina_notes_sync_error','error_type':type(exc).__name__}), flush=True)
+            # Provider text can contain private paths: log only allowlisted diagnostic categories.
+            message = str(exc).lower()
+            reason = next((label for needle, label in (
+                ('required scope', 'required_scope'), ('missing_scope', 'required_scope'),
+                ('expired_access_token', 'expired_token'), ('invalid_access_token', 'invalid_token'),
+                ('not_found', 'path_not_found'), ('invalid_root', 'invalid_namespace'),
+                ('select-user', 'team_member_selection'), ('rate_limit', 'rate_limit'),
+                ('too_many', 'rate_limit'), ('invalid_grant', 'refresh_rejected'),
+                ('disallowed', 'disallowed'), ('not permitted', 'not_permitted')) if needle in message), 'other')
+            scopes = [s for s in ('files.metadata.read','files.content.read') if s in message]
+            print(json.dumps({'event':'irina_notes_sync_error','error_type':type(exc).__name__,
+                              'reason':reason,'required_scopes':scopes}), flush=True)
         stop.wait(120)
 
 

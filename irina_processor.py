@@ -243,13 +243,15 @@ class Intelligence:
             'American vowel coloring and American intonation. Keep every word in Italian. '
             if italian else
             'Speak natural American English with a clear General American accent. ')
-        instructions = ('Use an original youthful adult feminine voice, light and medium-high pitched, softly airy '
-            'and warmly conversational. Be calm, understated and gently intimate, with smooth phrasing and natural '
-            'pauses. Avoid a deep chesty register, gravel, heavy vocal fry or exaggerated whispering. Do not imitate '
-            'any real person or celebrity. Pronounce Irina Merovan as ee-REE-nuh meh-ROH-vuhn, stressing REE and ROH. '
+        instructions = ('Use an original fresh young adult feminine voice with a distinctly light, bright, medium-high '
+            'register. Keep resonance forward and in the head voice, never chesty or low. Sound lively, spontaneous, '
+            'smiling and contemporary, with slightly quicker conversational pacing and crisp articulation. Keep gentle '
+            'warmth, but avoid huskiness, darkness, vocal fry, breathy whispering, gravitas or a mature authoritative '
+            'tone. Do not imitate any real person or celebrity. Pronounce Irina Merovan as ee-REE-nuh meh-ROH-vuhn, '
+            'stressing REE and ROH. '
             + pronunciation)
         result = request('https://api.openai.com/v1/audio/speech', self.token,
-            json.dumps({'model':'gpt-4o-mini-tts','voice':'shimmer','input':text[:3500],
+            json.dumps({'model':'gpt-4o-mini-tts','voice':'nova','input':text[:3500],
                         'instructions':instructions,'response_format':'wav'}).encode())
         wav.write_bytes(result)
         subprocess.run(['ffmpeg','-nostdin','-v','error','-y','-i',str(wav),'-c:a','libopus',

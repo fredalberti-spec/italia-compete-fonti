@@ -201,6 +201,14 @@ def make_app(inbox, secret, verify_token, owners):
             start(code, [('Content-Type','text/plain; charset=utf-8'), ('Cache-Control','no-store')])
             return [body.encode()]
         path, method = env.get('PATH_INFO'), env.get('REQUEST_METHOD')
+        public_pages = {'/privacy': 'privacy.html', '/data-deletion': 'data-deletion.html'}
+        if path in public_pages and method in ('GET', 'HEAD'):
+            body = (Path(__file__).parent / 'irina_public' / public_pages[path]).read_bytes()
+            start('200 OK', [('Content-Type', 'text/html; charset=utf-8'),
+                ('Content-Length', str(len(body))), ('Cache-Control', 'no-store'),
+                ('X-Content-Type-Options', 'nosniff'),
+                ('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")])
+            return [body] if method == 'GET' else []
         if path == '/healthz' and method == 'GET':
             return response('200 OK', 'ok')
         if path != '/webhook':

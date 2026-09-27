@@ -108,6 +108,23 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(result,[b'123'])
         self.assertEqual(statuses,['200 OK'])
 
+    def test_public_pages_do_not_expose_private_routes(self):
+        app = make_app(self.inbox,SECRET,VERIFY,OWNER)
+        for path in ('/privacy', '/data-deletion'):
+            result = []
+            body = b''.join(app({'PATH_INFO':path,'REQUEST_METHOD':'GET'},
+                lambda status,headers:result.append((status,dict(headers)))))
+            self.assertEqual(result[0][0], '200 OK')
+            self.assertIn('text/html', result[0][1]['Content-Type'])
+            self.assertIn(b'Fernando G. Alberti', body)
+            self.assertNotIn(SECRET.encode(), body)
+            self.assertEqual(b''.join(app({'PATH_INFO':path,'REQUEST_METHOD':'HEAD'},
+                lambda *_:None)), b'')
+        for path in ('/privacy/../../irina_inbox.py', '/inbox', '/irina_public/privacy.html'):
+            statuses = []
+            app({'PATH_INFO':path,'REQUEST_METHOD':'GET'},lambda code,_:statuses.append(code))
+            self.assertEqual(statuses, ['404 Not Found'])
+
     def test_wrong_account_and_phone_ignored(self):
         data = payload()
         data['entry'][0]['id'] = 'other'

@@ -35,7 +35,10 @@ def main():
     server = subprocess.Popen(['gunicorn','--bind','0.0.0.0:'+os.environ.get('PORT','10000'),
                                '--workers','1','--threads','4','--timeout','30','irina_inbox:application'])
     from irina_email import run as email_run
+    from irina_notes import make_index, run as notes_run
     email_stop = threading.Event()
+    processor.notes = make_index(root, os.environ['IRINA_DROPBOX_REFRESH_TOKEN'], os.environ['DROPBOX_APP_KEY'])
+    threading.Thread(target=notes_run, args=(processor.notes, email_stop), daemon=True).start()
     threading.Thread(target=email_run, args=(processor, email_stop), daemon=True).start()
     stopping = False
     def stop(*_):

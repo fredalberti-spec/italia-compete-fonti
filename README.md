@@ -8,10 +8,18 @@ non genera né pubblica post.
 
 `papa.py` usa il client Telegram già autenticato dal worker, sullo stesso disco
 persistente, senza browser, nuovi login o copie della sessione. È abilitata per
-default (`PAPA_ENABLED=false` la disabilita) e controlla ogni giorno alle 08:30
-Europe/Rome, a partire dal 27/09/2026. Un riavvio dopo le 08:30 recupera il
-controllo del giorno. Un risultato definitivo, anche con giornali mancanti,
-chiude la giornata; gli errori tecnici vengono riconciliati e registrati.
+default (`PAPA_ENABLED=false` la disabilita). Dal 27/09/2026 controlla la
+disponibilità ogni 5 minuti dalle 08:00 alle 09:30 Europe/Rome e inoltra solo
+negli appuntamenti delle **08:30 e 09:30**, con scansione aggiornata prima di
+ogni invio. Alle 09:30 invia solo ciò che manca: il risultato parziale delle
+08:30 non chiude più la giornata. Entrambi gli appuntamenti sono persistiti
+in SQLite e condividono il registro anti-duplicati; i risultati della versione
+precedente restano validi per il primo appuntamento, incluso quello di oggi.
+
+Il ciclo si attiva ogni 10 secondi. Un riavvio durante il minuto previsto può
+recuperare l'appuntamento; fuori da quei due minuti non parte alcun invio di
+recupero. Errori e tentativi incerti restano registrati e non vengono reinviati.
+I controlli intermedi sono di sola lettura e non scaricano documenti.
 
 Unico destinatario: utente privato Papà, ID 8836718451; unica fonte: Part 2,
 ID -1001295597629. Inoltra esclusivamente Corriere della Sera nazionale e
@@ -27,7 +35,8 @@ incluso: l'integrazione WhatsApp Business resta da configurare separatamente.
 
 Log: `papa_api_ready` certifica accesso a fonte e identità destinatario;
 `papa_forward_verified` certifica la presenza del singolo documento;
-`papa_daily_result` riporta presenti/mancanti; `papa_result_uncertain` richiede
+`papa_availability` registra i controlli intermedi;
+`papa_daily_result` riporta presenti/mancanti e lo slot, con `final=true` alle 09:30; `papa_result_uncertain` richiede
 verifica. Un deploy riuscito, da solo, non certifica l'invio dei quotidiani.
 Test: `python -m unittest discover -s tests -p 'test_papa.py' -v`.
 

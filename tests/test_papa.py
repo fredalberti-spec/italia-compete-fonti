@@ -125,6 +125,79 @@ class Flow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events[-1][1]['result'], 'missing')
 
 
+    async def test_second_slot_sends_late_paper_only_and_survives_restart(self):
+        client = FakeClient([self.giorno])
+        await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, 8, 30, tzinfo=papa.ROME), self.report)
+        client.sources.append(self.corriere)
+        for hour, minute in ((8, 45), (9, 0), (9, 29)):
+            await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, hour, minute, tzinfo=papa.ROME), self.report)
+        self.assertEqual([r.id for r in client.requests], [[3]])
+        papa.setup(self.db)
+        await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, 9, 30, tzinfo=papa.ROME), self.report)
+        self.assertEqual([r.id for r in client.requests], [[3], [1]])
+        self.assertEqual(self.events[-1][1]['slot'], '09:30')
+        self.assertTrue(self.events[-1][1]['final'])
+        self.assertEqual(self.events[-1][1]['missing'], [])
+        papa.setup(self.db)
+        await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, 9, 30, 40, tzinfo=papa.ROME), self.report)
+        self.assertEqual(len(client.requests), 2)
+
+    async def test_today_legacy_partial_does_not_block_second_slot(self):
+        self.db.execute('INSERT INTO papa_days VALUES (?,?)', (DAY.isoformat(), 'partial'))
+        self.db.execute('INSERT INTO papa_deliveries VALUES (?,?,?,?,?,?)',
+                        (DAY.isoformat(), 'giorno_legnano', 3, 456, 'verified', 1003))
+        self.db.commit()
+        present = msg(1003, self.giorno.file.name, True)
+        client = FakeClient([self.corriere, self.giorno], [present])
+        await papa.run_day(client, self.db, DAY, self.report, '08:30')
+        self.assertEqual(client.requests, [])
+        await papa.run_day(client, self.db, DAY, self.report, '09:30')
+        self.assertEqual([r.id for r in client.requests], [[1]])
+
+    async def test_pending_first_slot_not_resent_at_second(self):
+        self.db.execute('INSERT INTO papa_deliveries VALUES (?,?,?,?,?,NULL)',
+                        (DAY.isoformat(), 'corriere', 1, 123, 'pending'))
+        self.db.commit()
+        client = FakeClient([self.corriere, self.giorno])
+        await papa.run_day(client, self.db, DAY, self.report, '09:30')
+        self.assertEqual([r.id for r in client.requests], [[3]])
+        self.assertEqual(self.events[-1][0], 'papa_result_uncertain')
+        self.assertEqual(self.events[-1][1]['uncertain'], ['corriere'])
+
+    async def test_availability_checks_never_send(self):
+        client = FakeClient([self.corriere, self.giorno])
+        await papa.check_available(client, DAY, self.report)
+        self.assertEqual(client.requests, [])
+        self.assertEqual(set(self.events[-1][1]['available']), set(papa.PAPERS))
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM papa_deliveries').fetchone()[0], 0)
+
+    async def test_no_early_intermediate_or_late_sends(self):
+        client = FakeClient([self.corriere, self.giorno])
+        for hour, minute in ((7, 59), (8, 0), (8, 29), (8, 31), (9, 29), (9, 31), (12, 0)):
+            await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, hour, minute, tzinfo=papa.ROME), self.report)
+        self.assertEqual(client.requests, [])
+
+    async def test_completed_first_slot_no_duplicates_at_second(self):
+        client = FakeClient([self.corriere, self.giorno])
+        await papa.run_day(client, self.db, DAY, self.report, '08:30')
+        await papa.run_day(client, self.db, DAY, self.report, '09:30')
+        self.assertEqual(len(client.requests), 2)
+        self.assertEqual(self.events[-1][1]['sent'], [])
+        self.assertEqual(self.events[-1][1]['result'], 'complete')
+
+
+class Schedule(unittest.TestCase):
+    def test_rome_window_and_slots_across_daylight_saving(self):
+        from datetime import timezone
+        for month, day, utc_hour in ((9, 28, 6), (10, 26, 7)):
+            at = datetime(2026, month, day, utc_hour, 30, tzinfo=timezone.utc)
+            self.assertEqual(papa.scheduled_slot(at), '08:30')
+            self.assertEqual(papa.scheduled_slot(at.replace(hour=utc_hour+1)), '09:30')
+        for hour, minute, expected in ((7, 59, False), (8, 0, True), (9, 30, True), (9, 31, False)):
+            self.assertEqual(papa.check_window(datetime(2026, 9, 28, hour, minute, tzinfo=papa.ROME)), expected)
+        self.assertFalse(papa.check_window(datetime(2026, 9, 26, 8, 30, tzinfo=papa.ROME)))
+
+
 class Recipient(unittest.IsolatedAsyncioTestCase):
     async def test_wrong_name_and_nonprivate_recipient_rejected(self):
         source = types.Channel(id=1295597629, title='Part 2', photo=None, date=None)

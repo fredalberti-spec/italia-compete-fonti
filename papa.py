@@ -17,6 +17,8 @@ START_DATE = '2026-09-27'
 MONTHS = ('gennaio febbraio marzo aprile maggio giugno luglio agosto settembre '
           'ottobre novembre dicembre').split()
 PAPERS = ('corriere', 'giorno_legnano')
+SEND_TIMES = ('08:30', '09:30')
+CHECK_INTERVAL = 300
 
 
 def normalized(value):
@@ -57,6 +59,8 @@ def setup(db):
     db.execute('CREATE TABLE IF NOT EXISTS papa_deliveries '
                '(day TEXT, paper TEXT, source_message INTEGER, random_id INTEGER, '
                'state TEXT, destination_message INTEGER, PRIMARY KEY(day,paper))')
+    db.execute('CREATE TABLE IF NOT EXISTS papa_runs '
+               '(day TEXT, slot TEXT, result TEXT NOT NULL, PRIMARY KEY(day,slot))')
     db.commit()
 
 
@@ -99,10 +103,19 @@ async def recent_papers(client, entity, day, outgoing=False):
     return result
 
 
-async def run_day(client, db, day, report):
+async def run_day(client, db, day, report, slot='08:30'):
     from telethon import functions
     key = day.isoformat()
-    if db.execute('SELECT 1 FROM papa_days WHERE day=?', (key,)).fetchone():
+    if slot not in SEND_TIMES:
+        raise ValueError('PapaInvalidSlot')
+    if db.execute('SELECT 1 FROM papa_runs WHERE day=? AND slot=?', (key, slot)).fetchone():
+        return
+    # The original worker already completed the first run on migration day.
+    # Preserve that result, but let the new 09:30 run revisit missing papers.
+    legacy = db.execute('SELECT result FROM papa_days WHERE day=?', (key,)).fetchone()
+    if slot == '08:30' and legacy:
+        with db:
+            db.execute('INSERT INTO papa_runs VALUES (?,?,?)', (key, slot, legacy[0]))
         return
     source, dest = await resolve(client)
     present = await recent_papers(client, dest, day, outgoing=True)
@@ -136,14 +149,14 @@ async def run_day(client, db, day, report):
         with db:
             db.execute('INSERT INTO papa_deliveries VALUES (?,?,?,?,?,NULL)',
                        (key, paper, message.id, random_id, 'pending'))
-        report('papa_forward_started', day=key, paper=paper,
+        report('papa_forward_started', day=key, slot=slot, paper=paper,
                source_message=message.id, recipient=DESTINATION)
         # Exactly one message, one pinned recipient; never expands an album.
         try:
             await client(functions.messages.ForwardMessagesRequest(
                 from_peer=source, id=[message.id], random_id=[random_id], to_peer=dest))
         except Exception as exc:
-            report('papa_forward_uncertain', day=key, paper=paper,
+            report('papa_forward_uncertain', day=key, slot=slot, paper=paper,
                    error_type=type(exc).__name__)
             raise
         present.update(await recent_papers(client, dest, day, outgoing=True))
@@ -155,40 +168,88 @@ async def run_day(client, db, day, report):
             db.execute('UPDATE papa_deliveries SET state=?,destination_message=? '
                        'WHERE day=? AND paper=?', ('verified', delivered.id, key, paper))
         sent.append(paper)
-        report('papa_forward_verified', day=key, paper=paper, filename=delivered.file.name,
+        report('papa_forward_verified', day=key, slot=slot, paper=paper, filename=delivered.file.name,
                recipient=DESTINATION, destination_message=delivered.id)
     missing = [p for p in PAPERS if p not in present]
     if uncertain:
-        report('papa_result_uncertain', day=key, present=sorted(present), uncertain=uncertain,
+        report('papa_result_uncertain', day=key, slot=slot, present=sorted(present), uncertain=uncertain,
                missing=missing, recipient=DESTINATION)
         return
     result = 'complete' if not missing else 'partial' if present else 'missing'
     with db:
-        db.execute('INSERT INTO papa_days VALUES (?,?)', (key, result))
-    report('papa_daily_result', day=key, result=result, sent=sent,
+        db.execute('INSERT INTO papa_runs VALUES (?,?,?)', (key, slot, result))
+        db.execute('INSERT OR REPLACE INTO papa_days VALUES (?,?)', (key, result))
+    report('papa_daily_result', day=key, slot=slot, final=(slot == '09:30'),
+           result=result, sent=sent,
            present=sorted(present), missing=missing, recipient=DESTINATION,
            whatsapp='not_configured')
+
+
+def check_window(now):
+    local = now.astimezone(ROME)
+    return (local.date().isoformat() >= START_DATE
+            and (8, 0) <= (local.hour, local.minute) <= (9, 30))
+
+
+def scheduled_slot(now):
+    local = now.astimezone(ROME)
+    slot = local.strftime('%H:%M')
+    return slot if check_window(local) and slot in SEND_TIMES else None
+
+
+async def run_scheduled(client, db, now, report):
+    slot = scheduled_slot(now)
+    if slot:
+        await run_day(client, db, now.astimezone(ROME).date(), report, slot)
+
+
+async def check_available(client, day, report):
+    source, dest = await resolve(client)
+    available = await recent_papers(client, source, day)
+    present = await recent_papers(client, dest, day, outgoing=True)
+    report('papa_availability', day=day.isoformat(), recipient=DESTINATION,
+           available={paper: message.file.name for paper, message in available.items()},
+           present=sorted(present), missing=[p for p in PAPERS if p not in present])
 
 
 async def service(client, db, stopped, report):
     setup(db)
     retry_after = 0
+    next_check = 0
     try:
         await resolve(client)
         report('papa_api_ready', recipient=DESTINATION, source=SOURCE,
-               time='08:30', timezone='Europe/Rome', start_date=START_DATE)
+               times=list(SEND_TIMES), check_window=['08:00', '09:30'],
+               check_interval_seconds=CHECK_INTERVAL,
+               timezone='Europe/Rome', start_date=START_DATE)
     except Exception as exc:
         report('papa_preflight_error', error_type=type(exc).__name__)
     while not stopped.is_set():
         now = datetime.now(ROME)
-        if now.date().isoformat() >= START_DATE and (now.hour, now.minute) >= (8, 30):
-            if asyncio.get_running_loop().time() >= retry_after:
-                try:
-                    await run_day(client, db, now.date(), report)
-                    retry_after = asyncio.get_running_loop().time() + 300
-                except Exception as exc:
-                    report('papa_api_error', day=now.date().isoformat(), error_type=type(exc).__name__)
-                    retry_after = asyncio.get_running_loop().time() + max(60, getattr(exc, 'seconds', 0))
+        clock = asyncio.get_running_loop().time()
+        slot = scheduled_slot(now)
+        # Sending slots take priority over the read-only availability scan.
+        if slot and clock >= retry_after:
+            try:
+                await run_scheduled(client, db, now, report)
+                retry_after = asyncio.get_running_loop().time() + 60
+                next_check = asyncio.get_running_loop().time() + CHECK_INTERVAL
+            except Exception as exc:
+                report('papa_api_error', day=now.date().isoformat(), slot=slot,
+                       error_type=type(exc).__name__)
+                retry_after = asyncio.get_running_loop().time() + max(60, getattr(exc, 'seconds', 0))
+                next_check = max(next_check, retry_after)
+        elif check_window(now) and not slot and clock >= max(next_check, retry_after):
+            try:
+                # Bound read-only scans so they cannot occupy a sending minute.
+                await asyncio.wait_for(check_available(client, now.date(), report), timeout=20)
+                next_check = asyncio.get_running_loop().time() + CHECK_INTERVAL
+            except Exception as exc:
+                report('papa_check_error', day=now.date().isoformat(),
+                       error_type=type(exc).__name__)
+                next_check = asyncio.get_running_loop().time() + max(60, getattr(exc, 'seconds', 0))
+                if getattr(exc, 'seconds', 0):
+                    retry_after = max(retry_after, next_check)
         try:
             await asyncio.wait_for(stopped.wait(), timeout=10)
         except asyncio.TimeoutError:

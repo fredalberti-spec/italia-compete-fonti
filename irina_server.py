@@ -6,6 +6,7 @@ from pathlib import Path
 import signal
 import subprocess
 import time
+import threading
 
 from irina_inbox import Inbox, owner_phones
 from irina_processor import Archive, Intelligence, Processor, WhatsApp
@@ -33,10 +34,14 @@ def main():
     # Access logging disabled: Meta verification uses a secret query parameter.
     server = subprocess.Popen(['gunicorn','--bind','0.0.0.0:'+os.environ.get('PORT','10000'),
                                '--workers','1','--threads','4','--timeout','30','irina_inbox:application'])
+    from irina_email import run as email_run
+    email_stop = threading.Event()
+    threading.Thread(target=email_run, args=(processor, email_stop), daemon=True).start()
     stopping = False
     def stop(*_):
         nonlocal stopping
         stopping = True
+        email_stop.set()
         server.terminate()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -51,6 +56,7 @@ def main():
             if not processor.step():
                 time.sleep(1)
     finally:
+        email_stop.set()
         server.terminate()
         try:
             server.wait(timeout=10)

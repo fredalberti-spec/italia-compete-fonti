@@ -287,13 +287,14 @@ class Archive:
                         and exc.error.get_path().get_conflict().is_folder()):
                     raise
         message = json.loads(row['payload'])
-        record = {'id':row['note'], 'project':row['project'], 'source':'WhatsApp Irina',
+        record = {'id':row['note'], 'project':row['project'], 'source':message.get('source', 'WhatsApp Irina'),
                   'message_id':row['id'], 'received_at':datetime.fromtimestamp(row['stamp'], ZoneInfo('Europe/Rome')).isoformat(),
                   'sender':row['sender'], 'actor':row['actor'],
                   'text':text, 'assistant_result':answer, 'publication_authorized':False,
                   'status':'appunto o bozza; non pubblicato',
                   'forwarded':bool(message.get('context',{}).get('forwarded') or message.get('context',{}).get('frequently_forwarded')),
-                  'original_filename':message.get(message.get('type',''),{}).get('filename')}
+                  'original_filename':message.get(message.get('type',''),{}).get('filename'),
+                  'email':message.get('email')}
         (folder / 'note.json').write_text(json.dumps(record,ensure_ascii=False,indent=2))
         (folder / 'note.md').write_text(f'# Appunto Irina — {LABELS[row["project"]]}\n\n'
             f'ID: {row["note"]}\nData: {record["received_at"]}\nStato: appunto/bozza, non pubblicato.\n\n'

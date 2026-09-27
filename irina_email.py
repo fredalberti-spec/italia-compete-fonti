@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -15,7 +16,7 @@ from email.utils import parseaddr
 from html.parser import HTMLParser
 
 from irina_inbox import LABELS, note_id, project_in
-from irina_processor import APIError, EXTENSIONS, NoRedirect, json_request
+from irina_processor import APIError, EXTENSIONS, NoRedirect
 
 MAX_FILE = 20 * 1024 * 1024
 MAX_TOTAL = 40 * 1024 * 1024
@@ -72,7 +73,28 @@ class Resend:
         if delay > 0:
             time.sleep(delay)
         self.last_request = time.monotonic()
-        return json_request('https://api.resend.com/emails/receiving' + path, self.token)
+        req = urllib.request.Request('https://api.resend.com/emails/receiving' + path, headers={
+            'Authorization': 'Bearer ' + self.token, 'Accept': 'application/json',
+            'User-Agent': 'Irina-email/1.0'})
+        try:
+            with urllib.request.build_opener(NoRedirect).open(req, timeout=90) as response:
+                body = response.read(32*1024*1024 + 1)
+                if len(body) > 32*1024*1024:
+                    raise ValueError('ResponseTooLarge')
+                return json.loads(body)
+        except urllib.error.HTTPError as exc:
+            # Record only an allowlisted error category, never headers, body or credentials.
+            error = APIError(exc.code)
+            error.category = 'unknown'
+            try:
+                category = json.loads(exc.read(8192)).get('name')
+                if category in {'missing_api_key', 'restricted_api_key', 'suspended_api_key',
+                                'invalid_api_key', 'invalid_permission', 'validation_error',
+                                'rate_limit_exceeded', 'application_error', 'service_unavailable'}:
+                    error.category = category
+            except (ValueError, AttributeError):
+                pass
+            raise error from None
     def download(self, item, path):
         url = urllib.parse.urlsplit(item.get('download_url', ''))
         if (url.scheme != 'https' or url.hostname != 'inbound-cdn.resend.com'
@@ -274,5 +296,6 @@ def run(processor, stop_event):
             reader.step()
         except Exception as exc:
             print(json.dumps({'event': 'irina_email_poll_error', 'error_type': type(exc).__name__,
-                              'http_status': exc.status if isinstance(exc, APIError) else None}), flush=True)
+                              'http_status': exc.status if isinstance(exc, APIError) else None,
+                              'api_error': getattr(exc, 'category', None)}), flush=True)
         stop_event.wait(10)

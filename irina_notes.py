@@ -210,7 +210,8 @@ def run(index, stop):
 def make_index(root, refresh, app_key):
     def factory():
         import dropbox
-        return dropbox.Dropbox(oauth2_refresh_token=refresh, app_key=app_key, timeout=45,
+        return dropbox.Dropbox(oauth2_refresh_token=(json.loads((Path(root) / "notes_dropbox.json").read_text())["refresh_token"]
+                                   if (Path(root) / "notes_dropbox.json").exists() else refresh), app_key=app_key, timeout=45,
                                max_retries_on_error=2, max_retries_on_rate_limit=2).with_path_root(
                                    dropbox.common.PathRoot.namespace_id(NAMESPACE))
     return NotesIndex(root, factory)

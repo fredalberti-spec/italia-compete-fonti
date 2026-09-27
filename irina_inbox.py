@@ -251,6 +251,9 @@ _app = None
 
 
 def application(env, start):
+    if env.get("PATH_INFO", "").startswith("/connect/dropbox-notes"):
+        from irina_notes_auth import application as notes_auth
+        return notes_auth(env, start)
     global _app
     if _app is None:
         _app = make_app(Inbox(os.environ['IRINA_DATA_DIR']), os.environ['META_APP_SECRET'],

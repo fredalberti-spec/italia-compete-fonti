@@ -1,0 +1,37 @@
+# Separate opt-in Blueprint. Does not change the existing worker or Telegram session.
+# Requires approval of a new paid service before applying.
+services:
+  - type: web
+    name: irina-assistant-inbox
+    runtime: docker
+    dockerfilePath: ./Dockerfile.irina
+    region: frankfurt
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: 'off'
+    healthCheckPath: /healthz
+    disk:
+      name: irina-inbox
+      mountPath: /var/data/irina
+      sizeGB: 1
+    envVars:
+      - key: IRINA_DATA_DIR
+        value: /var/data/irina
+      - key: IRINA_OWNER_PHONES
+        sync: false
+      - key: IRINA_PRIMARY_PHONE
+        sync: false
+      - key: IRINA_VERIFY_TOKEN
+        generateValue: true
+      - key: META_APP_SECRET
+        sync: false
+      - key: IRINA_WHATSAPP_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: IRINA_OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: IRINA_DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DROPBOX_APP_KEY
+        sync: false

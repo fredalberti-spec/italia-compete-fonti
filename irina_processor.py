@@ -445,7 +445,8 @@ class Processor:
             answer_file.write_text(answer, encoding='utf-8')
         remote = self.archive.save(row, folder, text, answer)
         self.inbox.update(row['id'], archive=remote)
-        self.send(row, f'Archiviato in {LABELS[project]} — ID {row["note"]}.\n\n{answer}')
+        # Keep archive paths and note IDs in the journal, not in conversational replies.
+        self.send(row, answer)
 
     def prune_mirrored_media(self):
         # Only local working copies whose exact contents have already been verified in Dropbox.

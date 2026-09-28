@@ -43,19 +43,23 @@ def template_json(url, token, payload=None):
         raise TemplateAPIError(exc.code, detail) from None
 
 
+BACKLOG_NAMES = ["20240601_hbr_sfida_sociale","20240926_manageritalia_modelli_di_business","20241010_quaderno_purpose","20241113_manageritalia_purpose","20250219_quaderno_servitization","20250301_hbr_servitizzazione","20250328_manageritalia_servitization","20250901_dirigente","20260212_manageritalia_competenze","20260305_fattoquotidiano_sfida_sociale","20260325_avvenire","20260401_hbr_competitivita_italia","20260526_manageritalia_evoluzione_modelli"]
+
+
 def validate(job):
     if job.get('schema') != 1 or job.get('brand_id') != 7005805:
         raise ValueError('WrongBrandOrSchema')
     rubric = job.get('rubrica')
-    if rubric not in ('Quotidiani', 'In agenda', 'Nel mondo', 'Il punto'):
+    if rubric not in ('Quotidiani', 'In agenda', 'Nel mondo', 'Il punto', 'Backlog'):
         raise ValueError('InvalidRubric')
     day = date.fromisoformat(job['date'])
     if day < date(2026, 9, 28):
         raise ValueError('BeforeAuthorization')
     name = job.get('basename', '')
-    if not re.fullmatch(day.strftime('%Y%m%d') + r'(?:_[2-9][0-9]*)?', name):
+    if not (name in BACKLOG_NAMES if rubric == 'Backlog' else re.fullmatch(day.strftime('%Y%m%d') + r'(?:_[2-9][0-9]*)?', name)):
         raise ValueError('InvalidBasename')
-    if job.get('png_path') != MEDIA + rubric + '/' + name + '.png':
+    folder = 'Backlog/Post' if rubric == 'Backlog' else rubric
+    if job.get('png_path') != MEDIA + folder + '/' + name + '.png':
         raise ValueError('InvalidMediaPath')
     if not re.fullmatch(r'[a-f0-9]{64}', job.get('png_sha256', '')):
         raise ValueError('MissingMediaHash')

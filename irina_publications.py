@@ -17,6 +17,26 @@ TEMPLATE = 'irina_italia_compete_pubblicato_v1'
 BODY = 'Italia Compete — {{1}}. Pubblicato: {{2}}. {{3}}. Irina'
 
 
+class TemplateAPIError(APIError):
+    def __init__(self, status, detail):
+        super().__init__(status)
+        self.detail = {k: detail.get(k) for k in ('code', 'error_subcode', 'error_user_title') if k in detail}
+
+
+def template_json(url, token, payload=None):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode() if payload is not None else None,
+        headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+    try:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=90) as response:
+            return json.loads(response.read(65536))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read(65536)).get('error', {})
+        except Exception:
+            detail = {}
+        raise TemplateAPIError(exc.code, detail) from None
+
+
 def validate(job):
     if job.get('schema') != 1 or job.get('brand_id') != 7005805:
         raise ValueError('WrongBrandOrSchema')
@@ -79,7 +99,7 @@ def upload_image(wa, image):
 
 def sample_handle(wa, image):
     base = 'https://graph.facebook.com/v23.0/'
-    session = json_request(base + 'app/uploads?file_length=' + str(len(image)) +
+    session = template_json(base + 'app/uploads?file_length=' + str(len(image)) +
         '&file_type=image%2Fpng&file_name=post.png', wa.token, {})
     sid = session.get('id', '')
     if not re.fullmatch(r'upload:[A-Za-z0-9_:=?&.%-]+', sid):
@@ -131,7 +151,8 @@ class Publications:
         token = self.p.whatsapp.token
         report = {'name': TEMPLATE, 'language': 'it'}
         try:
-            found = json_request(url + '?name=' + TEMPLATE + '&fields=id,name,status,language&limit=100', token)
+            report['stage'] = 'lookup'
+            found = template_json(url + '?name=' + TEMPLATE + '&fields=id,name,status,language&limit=100', token)
             match = next((t for t in found.get('data', []) if t.get('name') == TEMPLATE and t.get('language') == 'it'), None)
             if match:
                 report.update(id=match.get('id'), status=match.get('status'))
@@ -141,6 +162,7 @@ class Publications:
                 if attempted:
                     report.update(status='SUBMISSION_UNCERTAIN')
                 else:
+                    report['stage'] = 'sample_upload'
                     handle = sample_handle(self.p.whatsapp, self.image(job))
                     links = ' '.join(p['network'].capitalize() + ': ' + p['url'] for p in job['posts'])
                     payload = {'name': TEMPLATE, 'language': 'it', 'category': 'UTILITY', 'components': [
@@ -150,7 +172,8 @@ class Publications:
                         changed = db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',
                                              (TEMPLATE, 'submission_started')).rowcount
                     if changed:
-                        result = json_request(url, token, payload)
+                        report['stage'] = 'submission'
+                        result = template_json(url, token, payload)
                         report.update(id=result.get('id'), status=result.get('status', 'PENDING'))
                     else:
                         report.update(status='SUBMISSION_UNCERTAIN')
@@ -158,6 +181,8 @@ class Publications:
             report.update(status='CHECK_FAILED', error=type(exc).__name__)
             if isinstance(exc, APIError):
                 report['http_status'] = exc.status
+            if isinstance(exc, TemplateAPIError):
+                report.update(exc.detail)
         body = json.dumps(report, ensure_ascii=False, indent=2).encode()
         if self.last_reports.get('template') != body:
             self.client.files_upload(body, BASE + '/Esiti/template.json', mode=dropbox.files.WriteMode.overwrite, mute=True)

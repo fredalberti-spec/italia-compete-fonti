@@ -82,7 +82,7 @@ class Notices(unittest.TestCase):
         self.assertEqual(self.state()['state'],'accepted')
 
     @patch('irina_publications.sample_handle', return_value='sample')
-    @patch('irina_publications.json_request')
+    @patch('irina_publications.template_json')
     def test_template_submitted_once_even_after_ambiguous_result(self, api, upload):
         api.side_effect = [{'data': []}, TimeoutError(), {'data': []}]
         self.n.ensure_template(job())
@@ -92,7 +92,7 @@ class Notices(unittest.TestCase):
         upload.assert_called_once()
 
     @patch('irina_publications.sample_handle')
-    @patch('irina_publications.json_request')
+    @patch('irina_publications.template_json')
     def test_existing_template_is_never_recreated(self, api, upload):
         from irina_publications import TEMPLATE
         api.return_value={'data':[{'name':TEMPLATE,'language':'it','status':'APPROVED','id':'123'}]}

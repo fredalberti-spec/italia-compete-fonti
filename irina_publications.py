@@ -80,6 +80,10 @@ class Publications:
         import dropbox
         self.p = processor
         self.client = client or processor.archive.client.with_path_root(dropbox.common.PathRoot.namespace_id('2166447024'))
+        # Existing Notes OAuth grants read access; original archive token grants writes.
+        # Reuse both configured grants without requesting or changing their scopes.
+        self.reader = (processor.notes.factory().with_path_root(dropbox.common.PathRoot.namespace_id('2166447024'))
+                       if client is None and getattr(processor, 'notes', None) else self.client)
         self.last_reports = {}
         with processor.inbox.db() as db:
             db.execute("UPDATE publications SET state='uncertain', error='InterruptedSend' WHERE state='sending'")
@@ -116,10 +120,10 @@ class Publications:
                 db.execute("UPDATE publications SET state='blocked',error='ImageTemplateNotApproved' WHERE key=?", (key,))
             self.report(key)
             return
-        meta = self.client.files_get_metadata(job['png_path'])
+        meta = self.reader.files_get_metadata(job['png_path'])
         if not 0 < meta.size <= 5*1024*1024:
             raise ValueError('ImageTooLarge')
-        _, response = self.client.files_download(job['png_path'])
+        _, response = self.reader.files_download(job['png_path'])
         image = response.content
         if not image.startswith(b'\x89PNG\r\n\x1a\n') or hashlib.sha256(image).hexdigest() != job['png_sha256']:
             raise ValueError('ImageHashMismatch')
@@ -154,19 +158,19 @@ class Publications:
 
     def step(self):
         import dropbox
-        result = self.client.files_list_folder(BASE + '/Coda', recursive=False)
+        result = self.reader.files_list_folder(BASE + '/Coda', recursive=False)
         entries = result.entries
         while result.has_more:
-            result = self.client.files_list_folder_continue(result.cursor)
+            result = self.reader.files_list_folder_continue(result.cursor)
             entries.extend(result.entries)
         for entry in entries:
             if not isinstance(entry, dropbox.files.FileMetadata) or not entry.name.endswith('.json') or entry.size > 16384:
                 continue
             try:
-                _, response = self.client.files_download(entry.path_lower)
+                _, response = self.reader.files_download(entry.path_lower)
                 self.process(json.loads(response.content))
             except Exception as exc:
-                print(json.dumps({'event':'irina_publication_error','file':entry.name,'error':type(exc).__name__}), flush=True)
+                print(json.dumps({'event':'irina_publication_error','file':entry.name,'error':type(exc).__name__, 'required_scopes':[x for x in ('files.metadata.read','files.content.read','files.content.write') if x in str(exc)]}), flush=True)
         # Reconcile receipts even after a queue file is archived.
         with self.p.inbox.db() as db:
             keys = [r['key'] for r in db.execute('SELECT key FROM publications')]
@@ -181,5 +185,5 @@ def run(processor, stop):
         try:
             notices.step()
         except Exception as exc:
-            print(json.dumps({'event':'irina_publications_error','error':type(exc).__name__}), flush=True)
+            print(json.dumps({'event':'irina_publications_error','error':type(exc).__name__, 'required_scopes':[x for x in ('files.metadata.read','files.content.read','files.content.write') if x in str(exc)]}), flush=True)
         stop.wait(60)

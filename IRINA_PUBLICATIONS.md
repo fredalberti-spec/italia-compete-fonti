@@ -34,7 +34,11 @@ Un crash durante l'invio diventa uncertain e richiede riconciliazione.
 Entro la finestra conversazionale WhatsApp: immagine con didascalia, titolo e link.
 Fuori finestra: SOLO modello italiano approvato `irina_italia_compete_pubblicato_v1`,
 header IMAGE, body esatto `Italia Compete — {{1}}. Pubblicato: {{2}}. {{3}}. Irina`.
-Il codice NON crea modelli né presume approvazione Meta. Senza modello approvato:
+Il codice sottopone una sola volta a Meta il modello mancante, con PNG di esempio
+verificato e categoria UTILITY, e ne registra la revisione in Esiti/template.json.
+Non modifica altri modelli né presume approvazione Meta. Un invio ambiguo della
+richiesta non viene duplicato: si riconcilia cercando il nome esatto.
+Senza modello approvato:
 `blocked / ImageTemplateNotApproved`; il job resta in coda e viene ritentato solo dopo
 preflight valido (riapertura finestra da Fred o approvazione del modello). Nessun POST
 WhatsApp avviene prima del preflight. Non aggirare la finestra Meta.

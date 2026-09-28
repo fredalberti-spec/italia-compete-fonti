@@ -4,10 +4,12 @@ import json
 import re
 import time
 import uuid
+import urllib.request
+import urllib.error
 from datetime import date
 
 from irina_inbox import PHONE_ID, WABA_ID
-from irina_processor import APIError, json_request, request
+from irina_processor import APIError, NoRedirect, json_request, request
 
 BASE = '/Projects/Italia Compete/Gestione editoriale/Notifiche Irina'
 MEDIA = '/Projects/Italia Compete/post_IC_new/'
@@ -75,6 +77,25 @@ def upload_image(wa, image):
     return result['id']
 
 
+def sample_handle(wa, image):
+    base = 'https://graph.facebook.com/v23.0/'
+    session = json_request(base + 'app/uploads?file_length=' + str(len(image)) +
+        '&file_type=image%2Fpng&file_name=post.png', wa.token, {})
+    sid = session.get('id', '')
+    if not re.fullmatch(r'upload:[A-Za-z0-9_:=?&.%-]+', sid):
+        raise ValueError('InvalidUploadSession')
+    req = urllib.request.Request(base + sid, data=image, headers={
+        'Authorization': 'OAuth ' + wa.token, 'file_offset': '0', 'Content-Type': 'image/png'})
+    try:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=90) as response:
+            result = json.loads(response.read(65536))
+    except urllib.error.HTTPError as exc:
+        raise APIError(exc.code) from None
+    if not result.get('h'):
+        raise ValueError('MissingSampleHandle')
+    return result['h']
+
+
 class Publications:
     def __init__(self, processor, client=None):
         import dropbox
@@ -85,8 +106,62 @@ class Publications:
         self.reader = (processor.notes.factory().with_path_root(dropbox.common.PathRoot.namespace_id('2166447024'))
                        if client is None and getattr(processor, 'notes', None) else self.client)
         self.last_reports = {}
+        self.next_template_check = 0
         with processor.inbox.db() as db:
             db.execute("UPDATE publications SET state='uncertain', error='InterruptedSend' WHERE state='sending'")
+
+    def image(self, job):
+        meta = self.reader.files_get_metadata(job['png_path'])
+        if not 0 < meta.size <= 5*1024*1024:
+            raise ValueError('ImageTooLarge')
+        _, response = self.reader.files_download(job['png_path'])
+        image = response.content
+        if not image.startswith(b'\x89PNG\r\n\x1a\n') or hashlib.sha256(image).hexdigest() != job['png_sha256']:
+            raise ValueError('ImageHashMismatch')
+        return image
+
+    def ensure_template(self, job):
+        """Submit once; reconcile Meta review without altering other templates."""
+        import dropbox
+        if time.time() < self.next_template_check:
+            return
+        self.next_template_check = time.time() + 300
+        validate(job)
+        url = 'https://graph.facebook.com/v23.0/' + WABA_ID + '/message_templates'
+        token = self.p.whatsapp.token
+        report = {'name': TEMPLATE, 'language': 'it'}
+        try:
+            found = json_request(url + '?name=' + TEMPLATE + '&fields=id,name,status,language&limit=100', token)
+            match = next((t for t in found.get('data', []) if t.get('name') == TEMPLATE and t.get('language') == 'it'), None)
+            if match:
+                report.update(id=match.get('id'), status=match.get('status'))
+            else:
+                with self.p.inbox.db() as db:
+                    attempted = db.execute('SELECT value FROM settings WHERE key=?', (TEMPLATE,)).fetchone()
+                if attempted:
+                    report.update(status='SUBMISSION_UNCERTAIN')
+                else:
+                    handle = sample_handle(self.p.whatsapp, self.image(job))
+                    links = ' '.join(p['network'].capitalize() + ': ' + p['url'] for p in job['posts'])
+                    payload = {'name': TEMPLATE, 'language': 'it', 'category': 'UTILITY', 'components': [
+                        {'type': 'HEADER', 'format': 'IMAGE', 'example': {'header_handle': [handle]}},
+                        {'type': 'BODY', 'text': BODY, 'example': {'body_text': [[job['rubrica'], job['title'], links]]}}]}
+                    with self.p.inbox.db() as db:
+                        changed = db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',
+                                             (TEMPLATE, 'submission_started')).rowcount
+                    if changed:
+                        result = json_request(url, token, payload)
+                        report.update(id=result.get('id'), status=result.get('status', 'PENDING'))
+                    else:
+                        report.update(status='SUBMISSION_UNCERTAIN')
+        except Exception as exc:
+            report.update(status='CHECK_FAILED', error=type(exc).__name__)
+            if isinstance(exc, APIError):
+                report['http_status'] = exc.status
+        body = json.dumps(report, ensure_ascii=False, indent=2).encode()
+        if self.last_reports.get('template') != body:
+            self.client.files_upload(body, BASE + '/Esiti/template.json', mode=dropbox.files.WriteMode.overwrite, mute=True)
+            self.last_reports['template'] = body
 
     def report(self, key):
         import dropbox
@@ -120,14 +195,7 @@ class Publications:
                 db.execute("UPDATE publications SET state='blocked',error='ImageTemplateNotApproved' WHERE key=?", (key,))
             self.report(key)
             return
-        meta = self.reader.files_get_metadata(job['png_path'])
-        if not 0 < meta.size <= 5*1024*1024:
-            raise ValueError('ImageTooLarge')
-        _, response = self.reader.files_download(job['png_path'])
-        image = response.content
-        if not image.startswith(b'\x89PNG\r\n\x1a\n') or hashlib.sha256(image).hexdigest() != job['png_sha256']:
-            raise ValueError('ImageHashMismatch')
-        mid = upload_image(self.p.whatsapp, image)
+        mid = upload_image(self.p.whatsapp, self.image(job))
         payload = {'messaging_product': 'whatsapp', 'to': self.p.primary, 'type': 'image',
                    'image': {'id': mid, 'caption': caption}}
         if not window:
@@ -168,7 +236,9 @@ class Publications:
                 continue
             try:
                 _, response = self.reader.files_download(entry.path_lower)
-                self.process(json.loads(response.content))
+                job = json.loads(response.content)
+                self.process(job)
+                self.ensure_template(job)
             except Exception as exc:
                 print(json.dumps({'event':'irina_publication_error','file':entry.name,'error':type(exc).__name__, 'required_scopes':[x for x in ('files.metadata.read','files.content.read','files.content.write') if x in str(exc)]}), flush=True)
         # Reconcile receipts even after a queue file is archived.

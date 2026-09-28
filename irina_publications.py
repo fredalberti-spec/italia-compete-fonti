@@ -14,7 +14,13 @@ from irina_processor import APIError, NoRedirect, json_request, request
 BASE = '/Projects/Italia Compete/Gestione editoriale/Notifiche Irina'
 MEDIA = '/Projects/Italia Compete/post_IC_new/'
 TEMPLATE = 'irina_italia_compete_pubblicato_v1'
-BODY = 'Italia Compete — {{1}}. Pubblicato: {{2}}. {{3}}. Irina'
+BODY = ('Italia Compete: aggiornamento sulle pubblicazioni della rubrica {{1}}.\n'
+        'È stato pubblicato il contenuto: {{2}}.\n'
+        'Puoi visualizzare e ripostare i post da questi link: {{3}}.\n'
+        'In allegato trovi la grafica pubblicata.\nIrina')
+# First submission returned HTTP 400 and exact-name lookup confirmed no template.
+# A revised body may be submitted once; uncertain attempts are never retried.
+SUBMISSION_KEY = TEMPLATE + ':expanded_body'
 
 
 class TemplateAPIError(APIError):
@@ -158,9 +164,12 @@ class Publications:
                 report.update(id=match.get('id'), status=match.get('status'))
             else:
                 with self.p.inbox.db() as db:
-                    attempted = db.execute('SELECT value FROM settings WHERE key=?', (TEMPLATE,)).fetchone()
+                    attempted = db.execute('SELECT value FROM settings WHERE key=?', (SUBMISSION_KEY,)).fetchone()
                 if attempted:
-                    report.update(status='SUBMISSION_UNCERTAIN')
+                    try:
+                        report.update(json.loads(attempted['value']))
+                    except (ValueError, TypeError):
+                        report.update(status='SUBMISSION_UNCERTAIN')
                 else:
                     report['stage'] = 'sample_upload'
                     handle = sample_handle(self.p.whatsapp, self.image(job))
@@ -170,7 +179,7 @@ class Publications:
                         {'type': 'BODY', 'text': BODY, 'example': {'body_text': [[job['rubrica'], job['title'], links]]}}]}
                     with self.p.inbox.db() as db:
                         changed = db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',
-                                             (TEMPLATE, 'submission_started')).rowcount
+                                             (SUBMISSION_KEY, 'submission_started')).rowcount
                     if changed:
                         report['stage'] = 'submission'
                         result = template_json(url, token, payload)
@@ -183,6 +192,9 @@ class Publications:
                 report['http_status'] = exc.status
             if isinstance(exc, TemplateAPIError):
                 report.update(exc.detail)
+        if report.get('stage') == 'submission':
+            with self.p.inbox.db() as db:
+                db.execute('UPDATE settings SET value=? WHERE key=?', (json.dumps(report), SUBMISSION_KEY))
         body = json.dumps(report, ensure_ascii=False, indent=2).encode()
         if self.last_reports.get('template') != body:
             self.client.files_upload(body, BASE + '/Esiti/template.json', mode=dropbox.files.WriteMode.overwrite, mute=True)

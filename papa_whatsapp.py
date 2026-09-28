@@ -9,7 +9,7 @@ import hashlib
 import os
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 PHONE_ID = '1320348587831246'
@@ -32,6 +32,20 @@ def enabled():
     return os.environ.get('PAPA_WHATSAPP_ENABLED', 'false').lower() == 'true'
 
 
+def retry_slot(now):
+    """Optional one-day hourly window; never extends newspaper forwarding slots."""
+    local = now.astimezone(ZoneInfo('Europe/Rome'))
+    try:
+        day = date.fromisoformat(os.environ.get('PAPA_WHATSAPP_RETRY_DATE', ''))
+        start = int(os.environ.get('PAPA_WHATSAPP_RETRY_START_HOUR', ''))
+    except ValueError:
+        return None
+    if enabled() and local.date() == day and 10 <= start <= local.hour <= 23:
+        # A restart within the hour can recover the check, not replay missed hours.
+        return local.strftime('%H:00')
+    return None
+
+
 def recipient():
     value = os.environ.get('PAPA_WHATSAPP_TO', '').strip().lstrip('+')
     if not value.isdigit() or hashlib.sha256(value.encode()).hexdigest() != RECIPIENT_HASH:
@@ -43,6 +57,8 @@ def setup(db):
     db.execute('CREATE TABLE IF NOT EXISTS papa_whatsapp_notices ('
                'day TEXT PRIMARY KEY, slot TEXT, template TEXT, papers TEXT, '
                'state TEXT, message_id TEXT, created_at TEXT)')
+    db.execute('CREATE TABLE IF NOT EXISTS papa_whatsapp_retry_checks ('
+               'day TEXT, slot TEXT, result TEXT, PRIMARY KEY(day,slot))')
     db.commit()
 
 
@@ -96,12 +112,15 @@ def select_template(db, day, approved):
     return None
 
 
-async def notify(db, day, slot, present, report, graph=None):
+async def notify(db, day, slot, present, report, graph=None, *, retry_at=None):
     if not enabled():
         return 'disabled'
     setup(db)
     key = day.isoformat()
-    if slot not in ('08:30', '09:30'):
+    retry_allowed = (retry_at is not None
+                     and retry_at.astimezone(ZoneInfo('Europe/Rome')).date() == day
+                     and retry_slot(retry_at) == slot)
+    if slot not in ('08:30', '09:30') and not retry_allowed:
         raise ValueError('WhatsAppInvalidSlot')
     papers = sorted(set(present))
     if not papers or any(p not in TITLES for p in papers):
@@ -137,13 +156,23 @@ async def notify(db, day, slot, present, report, graph=None):
                 approved.add(name)
         name = select_template(db, day, approved)
         if name is None:
+            uncertain_intro = db.execute(
+                "SELECT 1 FROM papa_whatsapp_notices WHERE template=? "
+                "AND state IN ('pending','uncertain')", (INTRO,)).fetchone()
             report('papa_whatsapp_blocked', day=key, slot=slot,
-                   reason='template_not_approved_or_introduction_uncertain')
+                   reason='introduction_uncertain' if uncertain_intro else 'template_not_approved',
+                   template_statuses={t['name']: t.get('status') for t in result.get('data', [])
+                                      if t.get('name') in TEMPLATES and t.get('language') == 'it'},
+                   approved_exact=sorted(approved))
             return 'blocked'
     except Exception as exc:
         report('papa_whatsapp_blocked', day=key, slot=slot, reason='api_preflight',
                error_type=type(exc).__name__, code=getattr(exc, 'code', None))
         return 'blocked'
+    if retry_at is not None and retry_slot(datetime.now(ZoneInfo('Europe/Rome'))) != slot:
+        # Do not let a slow preflight send yesterday's notice after midnight.
+        report('papa_whatsapp_blocked', day=key, slot=slot, reason='retry_window_expired')
+        return 'expired'
     titles = ' e '.join(TITLES[p] for p in papers)
     payload = {'messaging_product': 'whatsapp', 'recipient_type': 'individual',
                'to': target, 'type': 'template',

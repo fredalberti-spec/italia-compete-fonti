@@ -227,6 +227,37 @@ async def check_available(client, day, report):
            present=sorted(present), missing=[p for p in PAPERS if p not in present])
 
 
+async def retry_whatsapp(client, db, now, report):
+    """Recheck only a blocked WhatsApp preflight, using the existing client."""
+    slot = papa_whatsapp.retry_slot(now)
+    if not slot:
+        return
+    day = now.astimezone(ROME).date()
+    key = day.isoformat()
+    # Any send reservation is terminal for today, including a crash or rejection.
+    if db.execute('SELECT 1 FROM papa_whatsapp_notices WHERE day=?', (key,)).fetchone():
+        return
+    with db:
+        claimed = db.execute('INSERT OR IGNORE INTO papa_whatsapp_retry_checks VALUES (?,?,?)',
+                             (key, slot, 'checking')).rowcount
+    if not claimed:
+        return
+    report('papa_whatsapp_retry_started', day=key, slot=slot)
+    result = 'blocked'
+    try:
+        # Read only: never calls run_day or forwards additional PDF documents.
+        _, dest = await asyncio.wait_for(resolve(client), timeout=20)
+        present = await asyncio.wait_for(recent_papers(client, dest, day, outgoing=True), timeout=20)
+        result = await papa_whatsapp.notify(db, day, slot, present, report, retry_at=now)
+    except Exception as exc:
+        report('papa_whatsapp_blocked', day=key, slot=slot,
+               reason='verification_or_notification_error', error_type=type(exc).__name__)
+    with db:
+        db.execute('UPDATE papa_whatsapp_retry_checks SET result=? WHERE day=? AND slot=?',
+                   (result, key, slot))
+    report('papa_whatsapp_retry_result', day=key, slot=slot, result=result)
+
+
 async def service(client, db, stopped, report):
     setup(db)
     papa_whatsapp.setup(db)
@@ -235,6 +266,11 @@ async def service(client, db, stopped, report):
            recipient='papa_pinned', sender=papa_whatsapp.SENDER,
            introduction_once=True, max_notices_per_day=1,
            delivery_tracking='api_acceptance_only')
+    report('papa_whatsapp_retry_ready',
+           date=papa_whatsapp.os.environ.get('PAPA_WHATSAPP_RETRY_DATE', ''),
+           start_hour=papa_whatsapp.os.environ.get('PAPA_WHATSAPP_RETRY_START_HOUR', ''),
+           timezone='Europe/Rome', end='23:59', interval_seconds=3600,
+           whatsapp_only=True, max_notices_per_day=1)
     retry_after = 0
     next_check = 0
     try:
@@ -271,6 +307,8 @@ async def service(client, db, stopped, report):
                 next_check = asyncio.get_running_loop().time() + max(60, getattr(exc, 'seconds', 0))
                 if getattr(exc, 'seconds', 0):
                     retry_after = max(retry_after, next_check)
+        elif papa_whatsapp.retry_slot(now) and clock >= retry_after:
+            await retry_whatsapp(client, db, now, report)
         try:
             await asyncio.wait_for(stopped.wait(), timeout=10)
         except asyncio.TimeoutError:

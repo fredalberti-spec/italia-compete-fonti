@@ -121,6 +121,17 @@ PDF ripubblicati, ripresa dopo errore e riconoscimento univoco della chat.
 
 ### Papà: avviso WhatsApp da Irina
 
+Tentativi WhatsApp orari temporanei: `PAPA_WHATSAPP_RETRY_DATE=2026-09-28`
+e `PAPA_WHATSAPP_RETRY_START_HOUR=11` abilitano soltanto per quella data
+(Europe/Rome) un controllo per ora dalle 11 fino alle 23. Non inoltrano PDF:
+rileggono la chat Papà con il client Telegram già esistente e riprovano il
+preflight dei modelli. Le verifiche orarie sono persistite in SQLite; qualsiasi
+prenotazione/invio WhatsApp del giorno interrompe i tentativi, anche in caso di
+esito incerto o rifiuto. La finestra scade automaticamente a mezzanotte e non
+cambia i due appuntamenti quotidiani delle 08:30 e 09:30. Se Meta approva un
+modello, l'avviso resta soggetto al limite di uno al giorno e al controllo del
+testo esatto, del mittente e del destinatario.
+
 `papa_whatsapp.py` aggiunge un avviso via WhatsApp Cloud API, dopo una nuova
 lettura della chat Telegram destinataria con il client già attivo. Nessun invio
 WhatsApp se non è verificato presente almeno un quotidiano corretto del giorno.

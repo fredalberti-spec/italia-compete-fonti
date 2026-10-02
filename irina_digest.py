@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from irina_inbox import PHONE_ID, WABA_ID
 from irina_processor import APIError, json_request, request
-from irina_digest_costs import Budget, CostBlocked
+from irina_digest_costs import Budget, CostBlocked, renew_rates
 
 BASE = '/Projects/Digest Fred'
 TEMPLATE = 'irina_digest_settimanale_v1'
@@ -205,6 +205,14 @@ class Digest:
         self.report(key)
 
     def step(self):
+        try:
+            refreshed=renew_rates(self.p.inbox,self.now())
+            if refreshed:print(json.dumps({'event':'irina_digest_rates',**refreshed}),flush=True)
+        except Exception as exc:
+            result={'blocked':str(exc) if isinstance(exc,CostBlocked) else type(exc).__name__}
+            if result!=getattr(self,'last_rate_result',None):
+                print(json.dumps({'event':'irina_digest_rates',**result}),flush=True)
+            self.last_rate_result=result
         # Existing digest loop finishes an explicitly requested provision only
         # after exact Meta approval, verified gross cost, and a delivered test.
         from types import SimpleNamespace

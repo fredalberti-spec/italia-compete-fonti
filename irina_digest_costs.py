@@ -7,7 +7,7 @@ import json
 import re
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from decimal import Decimal, ROUND_CEILING
 from html.parser import HTMLParser
@@ -16,6 +16,8 @@ from xml.etree import ElementTree as ET
 
 LIMIT = 5_000_000  # EUR micro-units, taxes and test deliveries included
 POLICY_KEY = 'digest_verified_cost_policy_v1'
+RATE_SNAPSHOT_KEY = 'digest_verified_rate_snapshot_v1'
+RATE_ATTEMPT_KEY = 'digest_rate_refresh_attempt_v1'
 SOURCE = 'https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing/'
 
 
@@ -91,13 +93,13 @@ def rate_url(data,snapshot,now):
     return url,snapshot['card_sha256']
 
 
-def live_rates():
+def live_rates(snapshot=None):
     # No credentials or billing changes. A failed read blocks delivery.
     with urllib.request.urlopen(SOURCE,timeout=20) as response:
         if urllib.parse.urlparse(response.url).hostname!='developers.facebook.com':raise CostBlocked('InvalidRateSource')
         data=response.read(2_000_001)
     if len(data)>2_000_000:raise CostBlocked('RateSourceTooLarge')
-    snapshot=json.loads(Path(__file__).with_name('irina_digest_rates.json').read_text())
+    snapshot=snapshot or json.loads(Path(__file__).with_name('irina_digest_rates.json').read_text())
     url,expected_hash=rate_url(data,snapshot,time.time())
     with urllib.request.urlopen(url,timeout=20) as response:
         if not (urllib.parse.urlparse(response.url).hostname or '').endswith('.fbcdn.net'):raise CostBlocked('InvalidRateCardHost')
@@ -106,6 +108,38 @@ def live_rates():
     if expected_hash and hashlib.sha256(data).hexdigest()!=expected_hash:
         raise CostBlocked('MetaRateCardChanged')
     return parse_rates(data)
+
+
+def rate_snapshot(inbox):
+    with inbox.db() as db:
+        row=db.execute('SELECT value FROM settings WHERE key=?',(RATE_SNAPSHOT_KEY,)).fetchone()
+    return json.loads(row['value']) if row else json.loads(Path(__file__).with_name('irina_digest_rates.json').read_text())
+
+
+def renew_rates(inbox, now, lookup=live_rates):
+    """Renew an unchanged official card before expiry; never revive stale evidence."""
+    snapshot=rate_snapshot(inbox)
+    expiry=datetime.fromisoformat(snapshot['valid_until'].replace('Z','+00:00')).timestamp()
+    if now<expiry-2*86400:return None
+    if now>=expiry:raise CostBlocked('VerifiedRateSnapshotExpired')
+    with inbox.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        attempt=db.execute('SELECT value FROM settings WHERE key=?',(RATE_ATTEMPT_KEY,)).fetchone()
+        if attempt and now-float(attempt['value'])<3600:return None
+        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(RATE_ATTEMPT_KEY,str(now)))
+        row=db.execute('SELECT value FROM settings WHERE key=?',(POLICY_KEY,)).fetchone()
+    if not row:raise CostBlocked('GrossCostPolicyNotVerified')
+    expected=json.loads(row['value'])['meta_rates_eur']
+    current=lookup(snapshot=snapshot)
+    if set(current)!=set(expected) or any(Decimal(current[k])!=Decimal(expected[k]) for k in current):
+        raise CostBlocked('MetaRatesChanged')
+    # The fallback reader verifies both document and card hashes on every read.
+    # Dynamic discovery remains fresh on every quote and takes precedence.
+    renewed=dict(snapshot,verified_at=datetime.fromtimestamp(now,timezone.utc).isoformat(),
+                 valid_until=datetime.fromtimestamp(now+7*86400,timezone.utc).isoformat())
+    with inbox.db() as db:
+        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(RATE_SNAPSHOT_KEY,json.dumps(renewed)))
+    return {'state':'rates_renewed','valid_until':renewed['valid_until']}
 
 
 class Budget:
@@ -125,7 +159,7 @@ class Budget:
                 raise CostBlocked('GrossCostPolicyExpiredOrInvalid')
             multiplier=Decimal(policy['gross_multiplier'])
             if not multiplier.is_finite() or not 1<=multiplier<=3:raise CostBlocked('InvalidGrossMultiplier')
-            current=self.rates()
+            current=self.rates(snapshot=rate_snapshot(self.inbox)) if self.rates is live_rates else self.rates()
             expected=policy['meta_rates_eur']
             if set(current)!=set(expected) or any(Decimal(current[k])!=Decimal(expected[k]) for k in current):
                 raise CostBlocked('MetaRatesChanged')

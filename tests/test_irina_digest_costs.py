@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 from irina_inbox import Inbox
-from irina_digest_costs import Budget,CostBlocked,POLICY_KEY,parse_rates,RateLinks,rate_url
+from irina_digest_costs import Budget,CostBlocked,POLICY_KEY,parse_rates,RateLinks,rate_url,renew_rates,rate_snapshot,RATE_SNAPSHOT_KEY
 
 RATES={'MARKETING':'0.0658','UTILITY':'0.0248','SERVICE':'0.0248'}
 
@@ -68,5 +68,35 @@ class Costs(unittest.TestCase):
     def test_dynamic_official_link_takes_priority(self):
         source=b'<a href="https://scontent.example.fbcdn.net/new.csv">Rates in EUR</a>'
         self.assertEqual(rate_url(source,{},0),('https://scontent.example.fbcdn.net/new.csv',None))
+
+    def test_renewal_before_expiry_preserves_tax_expiry_and_throttles(self):
+        self.save()
+        snap=rate_snapshot(self.inbox)
+        from datetime import datetime
+        expiry=datetime.fromisoformat(snap['valid_until'].replace('Z','+00:00')).timestamp()
+        lookup=Mock(return_value=RATES)
+        self.assertIsNone(renew_rates(self.inbox,expiry-3*86400,lookup))
+        lookup.assert_not_called()
+        result=renew_rates(self.inbox,expiry-86400,lookup)
+        self.assertEqual(result['state'],'rates_renewed')
+        self.assertEqual(lookup.call_args.kwargs['snapshot'],snap)
+        self.assertIsNone(renew_rates(self.inbox,expiry-86400+10,lookup))
+        with self.inbox.db() as db:
+            policy=json.loads(db.execute('SELECT value FROM settings WHERE key=?',(POLICY_KEY,)).fetchone()['value'])
+        self.assertEqual(policy['valid_until'],self.policy['valid_until'])
+
+    def test_renewal_expired_or_changed_rates_never_extends(self):
+        self.save()
+        snap=rate_snapshot(self.inbox)
+        from datetime import datetime
+        expiry=datetime.fromisoformat(snap['valid_until'].replace('Z','+00:00')).timestamp()
+        lookup=Mock(return_value=dict(RATES,MARKETING='0.07'))
+        with self.assertRaisesRegex(CostBlocked,'VerifiedRateSnapshotExpired'):
+            renew_rates(self.inbox,expiry,lookup)
+        lookup.assert_not_called()
+        with self.assertRaisesRegex(CostBlocked,'MetaRatesChanged'):
+            renew_rates(self.inbox,expiry-86400,lookup)
+        with self.inbox.db() as db:
+            self.assertIsNone(db.execute('SELECT value FROM settings WHERE key=?',(RATE_SNAPSHOT_KEY,)).fetchone())
 
 if __name__=='__main__':unittest.main()

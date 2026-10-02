@@ -11,10 +11,11 @@ from zoneinfo import ZoneInfo
 
 from irina_inbox import PHONE_ID, WABA_ID
 from irina_processor import APIError, json_request, request
+from irina_digest_costs import Budget, CostBlocked
 
 BASE = '/Projects/Digest Fred'
 TEMPLATE = 'irina_digest_settimanale_v1'
-BODY = ('Il digest economico settimanale richiesto è pronto: edizione {{1}}.\n'
+BODY = ('CONTROLUCE, il digest economico settimanale richiesto, è pronto: edizione {{1}}.\n'
         'In allegato il PDF di due pagine con notizie e sintesi interpretativa.\nIrina')
 MAX_BYTES = 10 * 1024 * 1024
 
@@ -67,14 +68,18 @@ def validate_pdf(data, digest):
     return data
 
 
-def approved(wa):
+def approved_template(wa):
     result = json_request('https://graph.facebook.com/v23.0/' + WABA_ID +
-        '/message_templates?name=' + TEMPLATE + '&fields=name,status,language,components&limit=100', wa.token)
-    return any(t.get('name') == TEMPLATE and t.get('status') == 'APPROVED' and t.get('language') == 'it'
+        '/message_templates?name=' + TEMPLATE + '&fields=name,status,language,category,components&limit=100', wa.token)
+    return next((t for t in result.get('data', []) if t.get('name') == TEMPLATE and t.get('status') == 'APPROVED' and t.get('language') == 'it'
         and [c.get('text') for c in t.get('components', []) if c.get('type') == 'BODY'] == [BODY]
         and [c.get('format') for c in t.get('components', []) if c.get('type') == 'HEADER'] == ['DOCUMENT']
         and all(c.get('type') in ('BODY','HEADER','FOOTER') for c in t.get('components', []))
-        for t in result.get('data', []))
+        ), None)
+
+
+def approved(wa):
+    return approved_template(wa) is not None
 
 
 def upload_pdf(wa, data):
@@ -98,13 +103,17 @@ class Digest:
                        if client is None and getattr(processor, 'notes', None) else self.client)
         self.last_reports = {}
         self.now, self.enabled = now, enabled
+        self.budget = Budget(self.p.inbox, now)
         with self.p.inbox.db() as db:
             db.execute("UPDATE digests SET state='uncertain', error='InterruptedSend' WHERE state='sending'")
+            db.execute("UPDATE digest_tests SET state='uncertain', error='InterruptedSend' WHERE state='sending'")
 
     def report(self, key):
         import dropbox
         with self.p.inbox.db() as db:
             row = dict(db.execute('SELECT * FROM digests WHERE key=?', (key,)).fetchone())
+            cost=db.execute('SELECT year,gross_micros,category,reserved_at FROM digest_costs WHERE key=?',('edition:'+key,)).fetchone()
+            row['cost_reservation']=dict(cost) if cost else None
             row['receipts'] = [dict(r) for r in db.execute('SELECT status,stamp FROM receipts WHERE id=?', (row['message_id'],))]
         row['manifest'] = json.loads(row.pop('payload'))
         body = json.dumps(row, ensure_ascii=False, indent=2).encode()
@@ -137,11 +146,14 @@ class Digest:
         if datetime.fromtimestamp(self.now(), ZoneInfo('Europe/Rome')).date() != date.fromisoformat(key):
             self.state(key, 'expired', 'SaturdayWindowMissed')
             return
-        if not self.enabled:
+        with self.p.inbox.db() as db:
+            active=db.execute("SELECT value FROM settings WHERE key='digest_delivery_active_v1'").fetchone()
+        if not (self.enabled or (active and active['value']=='true')):
             self.state(key, 'blocked', 'DeliveryNotActivated')
             return
         window = self.now() - self.p.inbox.owner_last_seen(self.p.primary) < 23*3600+55*60
-        if not window and not approved(self.p.whatsapp):
+        template = None if window else approved_template(self.p.whatsapp)
+        if not window and not template:
             self.state(key, 'blocked', 'DocumentTemplateNotApproved')
             return
         try:
@@ -153,8 +165,13 @@ class Digest:
         except Exception as exc:
             self.state(key, 'blocked', type(exc).__name__ if not isinstance(exc, ValueError) else str(exc))
             return
+        try:
+            micros, category = self.budget.quote('SERVICE' if window else template.get('category'), self.p.primary)
+        except CostBlocked as exc:
+            self.state(key, 'blocked', str(exc))
+            return
         mid = upload_pdf(self.p.whatsapp, data)
-        document = {'id':mid, 'filename':'digest-' + key + '.pdf'}
+        document = {'id':mid, 'filename':'CONTROLUCE-' + key + '.pdf'}
         payload = {'messaging_product':'whatsapp', 'to':self.p.primary, 'type':'document',
                    'document':dict(document, caption='Digest economico settimanale | ' + key + '\nIrina')}
         if not window:
@@ -162,8 +179,14 @@ class Digest:
                 'template':{'name':TEMPLATE,'language':{'code':'it'},'components':[
                     {'type':'header','parameters':[{'type':'document','document':document}]},
                     {'type':'body','parameters':[{'type':'text','text':key}]}]}}
-        with self.p.inbox.db() as db:
-            changed = db.execute("UPDATE digests SET state='sending',error=NULL WHERE key=? AND state IN ('queued','blocked')",(key,)).rowcount
+        try:
+            with self.p.inbox.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                self.budget.reserve(db, 'edition:'+key, micros, category)
+                changed = db.execute("UPDATE digests SET state='sending',error=NULL WHERE key=? AND state IN ('queued','blocked')",(key,)).rowcount
+        except CostBlocked as exc:
+            self.state(key, 'blocked', str(exc))
+            return
         if not changed:
             return
         state, sent, error = 'uncertain', None, None

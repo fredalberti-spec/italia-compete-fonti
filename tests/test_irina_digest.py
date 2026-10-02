@@ -37,6 +37,7 @@ class Delivery(unittest.TestCase):
         self.client.files_download.return_value=(None,SimpleNamespace(content=self.data))
         self.now = validate(self.j)[1]
         self.d = Digest(self.processor,self.client,now=lambda:self.now,enabled=True)
+        self.d.budget.quote=Mock(return_value=(65800,'MARKETING'))
 
     def state(self):
         with self.inbox.db() as db:
@@ -74,17 +75,18 @@ class Delivery(unittest.TestCase):
     def test_uncertain_and_crash_no_retry(self,upload,send):
         self.d.process(self.j)
         self.d=Digest(self.processor,self.client,now=lambda:self.now,enabled=True)
+        self.d.budget.quote=Mock(return_value=(65800,'MARKETING'))
         self.d.process(self.j);send.assert_called_once();self.assertEqual(self.state()['state'],'uncertain')
         with self.inbox.db() as db:db.execute("UPDATE digests SET state='sending'")
         Digest(self.processor,self.client);self.assertEqual(self.state()['error'],'InterruptedSend')
 
-    @patch('irina_digest.approved',return_value=False)
+    @patch('irina_digest.approved_template',return_value=None)
     @patch('irina_digest.upload_pdf')
     def test_unapproved_blocks(self,upload,approved):
         self.inbox.owner_last_seen.return_value=0;self.d.process(self.j)
         self.assertEqual(self.state()['error'],'DocumentTemplateNotApproved');upload.assert_not_called()
 
-    @patch('irina_digest.approved',return_value=True)
+    @patch('irina_digest.approved_template',return_value={'category':'MARKETING'})
     @patch('irina_digest.json_request',return_value={'messages':[{'id':'wamid.template'}]})
     @patch('irina_digest.upload_pdf',return_value='media')
     def test_document_template(self,upload,send,approved):

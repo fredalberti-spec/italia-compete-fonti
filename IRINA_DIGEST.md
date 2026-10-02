@@ -77,16 +77,17 @@ Entro la finestra owner valida viene inviato un DOCUMENT ordinario. Fuori finest
 è richiesto un template distinto `irina_digest_settimanale_v1`, lingua `it`, stato
 `APPROVED`, header `DOCUMENT`, body esattamente:
 
-> Il digest economico settimanale richiesto è pronto: edizione {{1}}.
+> CONTROLUCE, il digest economico settimanale richiesto, è pronto: edizione {{1}}.
 > In allegato il PDF di due pagine con notizie e sintesi interpretativa.
 > Irina
 
-Il codice esegue solo lookup e verifica, mai creazione o modifica di template.
+Il worker esegue solo lookup e verifica. Il comando operatore dedicato può
+richiedere il template, esclusivamente a seguito di autorizzazione esplicita.
 La classificazione e il prezzo effettivi devono essere verificati in Meta per
-l'account e il destinatario prima del test a pagamento. Nessun test WhatsApp
-reale o nuovo costo è autorizzato da questo contratto. Servono verifica degli
-accessi Dropbox correnti, approvazione esatta del DOCUMENT italiano, costo noto
-e autorizzazione al test, PDF reale verificato, ricevuta delivered, poi attivazione.
+l'account e il destinatario prima del test a pagamento. Fred ha autorizzato creazione template, test sul primary e attivazione dopo prova
+riuscita, con tetto complessivo **5 EUR annui, imposte e prova comprese**.
+L'autorizzazione non sostituisce la verifica di prezzi, imposte, approvazione Meta
+e ricevuta `delivered`. Nessun test WhatsApp reale è stato eseguito.
 
 Test locale: `python -m unittest discover -s tests -p 'test_irina*.py' -q`.
 Le fixture sono PDF vuoti sintetici, usati solo con API simulate.
@@ -117,11 +118,57 @@ di listino EUR 0.0658 più imposte, dopo conferma della categoria approvata.
 Nessun nuovo costo Render: uso del servizio e del disco esistenti, nessun cambio
 piano o numero istanze. Nessuna chiamata OpenAI è necessaria per la consegna.
 
-Residui per attivazione: autorizzazione e creazione separata del template DOCUMENT
-con esempio PDF chiaramente identificato, revisione e approvazione Meta del body
-esatto; verifica categoria/costo finale; PDF reale e attestazione del produttore;
-autorizzazione al test WhatsApp e alla modalità di test senza duplicare l'edizione;
-verifica receipt `delivered`; consenso separato all'abilitazione settimanale.
-Una spedizione reale del sabato usa la normale Coda; un test immediato fuori
-orario richiede una procedura separata concordata, senza aggirare il calendario
-né cancellare lo storico di deduplicazione.
+## Comandi operatore e blocco di costo
+
+Dalla shell del servizio esistente: `python irina_digest_admin.py template`,
+poi `rates`, `test`, `status`, `activate`, in questo ordine dopo le verifiche.
+Non viene creato alcun endpoint pubblico né accesso aggiuntivo. `template` usa un
+esempio DOCUMENT esplicitamente marcato PROVA e categoria richiesta MARKETING;
+Meta decide quella finale. Un marker persistente impedisce reinvii ciechi della
+richiesta. `test` usa esclusivamente il mock-up v6 sotto `Test`, SHA-256
+`b8ac2688e02b7b58f75dcc42a7cb3dc40753b62c2f8f02d4ed2e5e9a8e0fc01e`;
+non crea manifest editoriali o edizioni. Il body e il nome allegato dichiarano
+PROVA MOCK-UP NON VERIFICATO. La prova ha chiave persistente e un solo tentativo.
+`activate` richiede template approvato esatto, costo verificato e ricevuta
+`delivered` della prova; solo allora abilita il setting persistente dedicato.
+
+`digest_costs` conserva prenotazioni conservative in micro-EUR lordi per anno
+civile Europe/Rome, incluse prove e invii incerti/rifiutati. Un'unica transazione
+SQLite prenota prima del POST messaggio. Nessuna prenotazione viene liberata
+automaticamente: si preferisce bloccare prima che superare il limite. Prezzo,
+categoria o verifica fiscale non disponibili => nessun POST messaggio.
+
+Il setting privato `digest_verified_cost_policy_v1` richiede valuta EUR, mercato
+Italy, categoria effettiva del template, prezzi Meta per MARKETING/UTILITY/SERVICE,
+`taxes_verified:true`, SHA-256 dell'evidenza fiscale, moltiplicatore lordo verificato
+e scadenza `valid_until` Unix. È assente per default. Nessuna aliquota è presunta.
+Non occorre una conferma settimanale di Fred; il controllo prezzi è automatico
+prima di ogni tentativo e blocca quando cambia il listino o scade l'evidenza.
+
+**Blocco verificato 02/10/2026:** la risposta HTTP pubblica Meta è Markdown e
+la tabella EUR contiene etichette prive del collegamento al tariffario, mentre
+l'interfaccia browser presenta il link. Il lookup automatico restituisce
+`UnresolvedCurrentEURRateCard` e resta chiuso. La policy fiscale non è configurata.
+Prima di attivare serve una sorgente corrente Meta risolvibile automaticamente
+(verificata anche nel runtime Render), evidenza fiscale applicabile, creazione
+ed approvazione template e prova con ricevuta. Il trasporto della WebShell Mac
+è attualmente indisponibile; non si aggira con nuove credenziali.
+
+## Deposito del produttore
+
+Consegnare PDF e manifest entro **sabato 07:55 Europe/Rome** per lasciare cinque
+minuti ai controlli, preferibilmente venerdì. Prima caricare il PDF completo,
+poi il JSON in Coda: il manifest è il segnale di disponibilità. Il servizio
+rilascia dal sabato 08:00 con polling di 60 secondi; non garantisce il secondo
+esatto. A mezzanotte locale l'edizione non inviata scade senza spedizione tardiva.
+Il genitore produce i contenuti verificati: il servizio controlla struttura,
+hash e attestazione, non certifica la veridicità delle notizie. Per l'edizione
+reale non usare il mock-up né un manifest `editorial_verified:true` per prove.
+
+Il nome approvato è **CONTROLUCE — Economia, imprese e scenari globali.
+La settimana letta in prospettiva.** Prima del test usare la versione più recente
+approvata dal produttore. Per una nuova versione, tutti i comandi template/test/
+status/activate accettano la stessa coppia esplicita `--test-file` (solo PDF in
+`/Projects/Digest Fred/Test/`) e `--test-sha256`. La chiave della prova è il suo
+hash; non ripetere la prova se una precedente versione è già accettata senza
+un'esplicita necessità autorizzata. Il default v6 è un artefatto di prova soltanto.

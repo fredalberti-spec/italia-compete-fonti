@@ -26,7 +26,7 @@ class Costs(unittest.TestCase):
         self.rates.assert_not_called()
 
     def test_rates_category_and_expiry_block(self):
-        self.save();self.assertEqual(self.b.quote('MARKETING','390000000001'),(80276,'MARKETING'))
+        self.save();self.assertEqual(self.b.quote('MARKETING','390000000001'),(90000,'MARKETING'))
         with self.assertRaisesRegex(CostBlocked,'TemplateCategoryChanged'):self.b.quote('UTILITY','390000000001')
         self.rates.return_value=dict(RATES,MARKETING='0.07')
         with self.assertRaisesRegex(CostBlocked,'MetaRatesChanged'):self.b.quote('MARKETING','390000000001')

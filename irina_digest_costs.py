@@ -131,7 +131,7 @@ class Budget:
                 raise CostBlocked('MetaRatesChanged')
             if category not in current or (category!='SERVICE' and category!=policy['template_category']):
                 raise CostBlocked('TemplateCategoryChanged')
-            micros=int((Decimal(current[category])*multiplier*1_000_000).to_integral_value(rounding=ROUND_CEILING))
+            micros=int((Decimal(current[category])*multiplier).quantize(Decimal('0.01'),rounding=ROUND_CEILING)*1_000_000)
             if not 0<micros<=LIMIT:raise CostBlocked('InvalidGrossQuote')
             return micros,category
         except CostBlocked:raise

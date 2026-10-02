@@ -173,3 +173,25 @@ status/activate accettano la stessa coppia esplicita `--test-file` (solo PDF in
 `/Projects/Digest Fred/Test/`) e `--test-sha256`. La chiave della prova è il suo
 hash; non ripetere la prova se una precedente versione è già accettata senza
 un'esplicita necessità autorizzata. Il default v6 è un artefatto di prova soltanto.
+
+## Aggiornamento del 02/10/2026, 09:25 UTC
+
+WebShell ripristinata. Richiesta template CONTROLUCE eseguita con mock-up v7:
+Meta restituisce `PENDING`, categoria richiesta `MARKETING`. Nessun messaggio
+WhatsApp inviato. Account fiscale Meta nel browser richiede login: serve leggere
+la fattura WhatsApp o la schermata fiscale dell'account per verificare imposta
+applicata, valuta ed eventuali commissioni. Non cambiare credenziali/accessi.
+
+Per il documento HTTP senza link, `irina_digest_rates.json` contiene il link
+ufficiale già verificato nel browser, data effettiva, data di verifica, SHA-256
+del documento pubblico e del tariffario. Il fallback è valido solo fino al
+09/10/2026 00:00 UTC (meno di sette giorni). Prima di ogni tentativo scarica di
+nuovo documento e tariffario: ogni cambio di hash, errore, scadenza o ambiguità
+blocca. Il lookup dinamico resta prioritario se il documento torna a esporre
+un link EUR unico. La scadenza non viene prorogata automaticamente: rinnovare
+solo dopo verifica della fonte corrente; non serve consenso settimanale di Fred.
+La policy fiscale resta assente e tutti gli invii restano bloccati.
+
+Il v7 di prova è `/Projects/Digest Fred/Test/controluce-mockup-v7.pdf`, SHA-256
+`54cccfe9097166aa55a0cd943170ee02e9bdaf68cc8640f8479991416337d1d4`,
+134276 byte, esattamente due pagine A4 verificate e marcate MOCK-UP.

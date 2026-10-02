@@ -1,9 +1,10 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from unittest.mock import Mock
 from irina_inbox import Inbox
-from irina_digest_costs import Budget,CostBlocked,POLICY_KEY,parse_rates,RateLinks
+from irina_digest_costs import Budget,CostBlocked,POLICY_KEY,parse_rates,RateLinks,rate_url
 
 RATES={'MARKETING':'0.0658','UTILITY':'0.0248','SERVICE':'0.0248'}
 
@@ -50,5 +51,22 @@ class Costs(unittest.TestCase):
         links=RateLinks();links.feed('<a href="https://scontent.example.fbcdn.net/rates.csv?a=1">Rates in EUR</a><a href="https://evil.example/rates.csv">Rates in EUR</a>')
         self.assertEqual(links.links,['https://scontent.example.fbcdn.net/rates.csv?a=1'])
         with self.assertRaises(CostBlocked):parse_rates(b'Italy,USD,0.1,0.1,0.1,n/a,0.1')
+
+    def test_verified_snapshot_expires_and_blocks_source_change(self):
+        source=b'Official pricing markdown with EUR labels'
+        snap={'verified_at':'2026-10-02T00:00:00Z','valid_until':'2026-10-09T00:00:00Z',
+            'document_sha256':hashlib.sha256(source).hexdigest(),
+            'card_sha256':'a'*64,'url':'https://scontent.example.fbcdn.net/rates.csv'}
+        self.assertEqual(rate_url(source,snap,1790899200), (snap['url'],'a'*64))
+        with self.assertRaisesRegex(CostBlocked,'VerifiedRateSnapshotExpired'):
+            rate_url(source,snap,1791504000)
+        with self.assertRaisesRegex(CostBlocked,'MetaPricingDocumentChanged'):
+            rate_url(source+b'changed',snap,1790899200)
+        snap['valid_until']='2026-10-10T00:00:00Z'
+        with self.assertRaises(CostBlocked):rate_url(source,snap,1790899200)
+
+    def test_dynamic_official_link_takes_priority(self):
+        source=b'<a href="https://scontent.example.fbcdn.net/new.csv">Rates in EUR</a>'
+        self.assertEqual(rate_url(source,{},0),('https://scontent.example.fbcdn.net/new.csv',None))
 
 if __name__=='__main__':unittest.main()

@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 WORKDIR /app
 COPY requirements-irina.txt .
 RUN pip install --no-cache-dir -r requirements-irina.txt
-COPY irina_digest_admin.py irina_digest_costs.py irina_digest.py irina_publications.py irina_inbox.py irina_processor.py irina_server.py irina_email.py irina_email_review.py irina_notes.py irina_notes_auth.py worker.py ./
+COPY irina_digest_rates.json irina_digest_admin.py irina_digest_costs.py irina_digest.py irina_publications.py irina_inbox.py irina_processor.py irina_server.py irina_email.py irina_email_review.py irina_notes.py irina_notes_auth.py worker.py ./
 COPY irina_public ./irina_public
 COPY tests ./tests
 RUN python -m unittest discover -s tests -p 'test_irina*.py'

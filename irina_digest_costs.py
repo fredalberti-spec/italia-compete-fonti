@@ -1,4 +1,7 @@
 """Fail-closed annual gross-cost budget, shared by digest editions and tests."""
+import hashlib
+import time
+from pathlib import Path
 import io
 import json
 import re
@@ -68,19 +71,40 @@ def parse_rates(data):
     return rates
 
 
+def rate_url(data,snapshot,now):
+    parser=RateLinks();parser.feed(data.decode('utf-8'))
+    urls=set(parser.links)
+    if len(urls)==1:return urls.pop(),None
+    if urls:raise CostBlocked('AmbiguousCurrentEURRateCard')
+    # Explicitly verified official browser card: bounded fallback, never a
+    # permanent cached price. Re-fetch card and source before every attempt.
+    verified=datetime.fromisoformat(snapshot['verified_at'].replace('Z','+00:00')).timestamp()
+    expiry=datetime.fromisoformat(snapshot['valid_until'].replace('Z','+00:00')).timestamp()
+    if not verified<=now<expiry or expiry-verified>7*86400:
+        raise CostBlocked('VerifiedRateSnapshotExpired')
+    if hashlib.sha256(data).hexdigest()!=snapshot['document_sha256']:
+        raise CostBlocked('MetaPricingDocumentChanged')
+    url=snapshot['url']
+    parsed=urllib.parse.urlparse(url)
+    if parsed.scheme!='https' or not (parsed.hostname or '').endswith('.fbcdn.net'):
+        raise CostBlocked('InvalidRateCardHost')
+    return url,snapshot['card_sha256']
+
+
 def live_rates():
     # No credentials or billing changes. A failed read blocks delivery.
     with urllib.request.urlopen(SOURCE,timeout=20) as response:
         if urllib.parse.urlparse(response.url).hostname!='developers.facebook.com':raise CostBlocked('InvalidRateSource')
         data=response.read(2_000_001)
     if len(data)>2_000_000:raise CostBlocked('RateSourceTooLarge')
-    parser=RateLinks();parser.feed(data.decode('utf-8'))
-    urls=set(parser.links)
-    if len(urls)!=1:raise CostBlocked('UnresolvedCurrentEURRateCard')
-    with urllib.request.urlopen(urls.pop(),timeout=20) as response:
+    snapshot=json.loads(Path(__file__).with_name('irina_digest_rates.json').read_text())
+    url,expected_hash=rate_url(data,snapshot,time.time())
+    with urllib.request.urlopen(url,timeout=20) as response:
         if not (urllib.parse.urlparse(response.url).hostname or '').endswith('.fbcdn.net'):raise CostBlocked('InvalidRateCardHost')
         data=response.read(2_000_001)
     if len(data)>2_000_000:raise CostBlocked('RateCardTooLarge')
+    if expected_hash and hashlib.sha256(data).hexdigest()!=expected_hash:
+        raise CostBlocked('MetaRateCardChanged')
     return parse_rates(data)
 
 

@@ -8,9 +8,19 @@ attivazione esplicita con `IRINA_DIGEST_ENABLED=true` sul servizio esistente.
 
 ## Deposito del produttore
 
-Cartella base: `/Projects/Personale/Digest Fred`.
-Creare `PDF`, `Coda`, `Esiti` usando gli accessi esistenti; se gli scope non bastano,
-fermarsi senza richiederne altri automaticamente. Depositare prima il PDF completo,
+Cartella base: `/Projects/Digest Fred`.
+Radice verificata sia dal servizio sia dal connettore: namespace `2166447024`,
+montato nel connettore sotto `/Strategique`. Le quattro cartelle dedicate sono
+state create con il grant già configurato sul servizio il 02/10/2026:
+`/Projects/Digest Fred`, `PDF`, `Coda`, `Esiti`.
+
+Per il produttore via connettore usare
+`ns:2166447024//Projects/Digest Fred` (oppure il path_display restituito:
+`/Strategique/Projects/Digest Fred`). Per l'SDK del servizio, dopo with_path_root
+sul namespace, usare `/Projects/Digest Fred`. Nel manifest pdf_path usare sempre
+la forma SDK `/Projects/Digest Fred/PDF/AAAA-MM-GG.pdf`, senza `/Strategique`.
+Il produttore può quindi scrivere nello stesso namespace letto dal servizio,
+senza altri accessi. Se gli scope non bastano, fermarsi senza ampliarli. Depositare prima il PDF completo,
 poi il manifest JSON (<=32 KiB) nella Coda, ultimo passo atomico del produttore.
 Non inserire mock-up in Coda. Il servizio non invia contenuti costruiti per i test.
 
@@ -21,7 +31,7 @@ Esempio di schema, **non una richiesta pronta all'invio**:
   "schema": 1,
   "edition": "2026-10-03",
   "edition_number": 1,
-  "pdf_path": "/Projects/Personale/Digest Fred/PDF/2026-10-03.pdf",
+  "pdf_path": "/Projects/Digest Fred/PDF/2026-10-03.pdf",
   "pdf_sha256": "SHA256 effettivo del file definitivo: 64 cifre esadecimali minuscole",
   "editorial_verified": true,
   "sources": [{"url": "https://URL-DELLA-FONTE", "title": "Titolo verificato", "published_date": "2026-10-02"}]
@@ -80,3 +90,38 @@ e autorizzazione al test, PDF reale verificato, ricevuta delivered, poi attivazi
 
 Test locale: `python -m unittest discover -s tests -p 'test_irina*.py' -q`.
 Le fixture sono PDF vuoti sintetici, usati solo con API simulate.
+
+## Verifiche del 02/10/2026 e costo documentato
+
+Lookup di sola lettura dalla shell del servizio con il token Meta configurato:
+`message_templates?name=irina_digest_settimanale_v1` restituisce `data:[]`;
+`exact_approved:false`. Il template dedicato non esiste e non è stato creato.
+Lookup account `fields=currency`: `EUR`; controllo del prefisso del primary:
+mercato `Italy`, senza registrare o mostrare il numero.
+
+Fonte primaria: [Prezzi Meta, aggiornati il 30/09/2026](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing#rate-cards-and-volume-tiers),
+tariffario EUR collegato dalla pagina, effective October 1, 2026, riga Italy:
+Utility **EUR 0.0248**, Marketing **EUR 0.0658**, Service **EUR 0.0248** per
+messaggio consegnato. Categoria del nuovo template ancora da attribuire a Meta:
+non presumere Utility per una newsletter editoriale. Per 52 consegne annue il
+costo di listino è EUR 1.2896 Utility oppure EUR 3.4216 Marketing, prima delle
+imposte ed eventuali sconti di volume. Per 4–5 edizioni mensili:
+EUR 0.0992–0.1240 Utility oppure EUR 0.2632–0.3290 Marketing.
+
+Dal 01/10/2026 i messaggi Service possono essere fatturati dopo i primi 1.000
+mensili per numero business; i template Utility sono fatturabili anche nella
+finestra aperta. Nessuna gratuità del test è presunta. L'eventuale esenzione
+FEP, il consumo della quota Service e la categoria finale non sono verificati
+per un invio futuro. Per un singolo test predisporre consenso a un costo massimo
+di listino EUR 0.0658 più imposte, dopo conferma della categoria approvata.
+Nessun nuovo costo Render: uso del servizio e del disco esistenti, nessun cambio
+piano o numero istanze. Nessuna chiamata OpenAI è necessaria per la consegna.
+
+Residui per attivazione: autorizzazione e creazione separata del template DOCUMENT
+con esempio PDF chiaramente identificato, revisione e approvazione Meta del body
+esatto; verifica categoria/costo finale; PDF reale e attestazione del produttore;
+autorizzazione al test WhatsApp e alla modalità di test senza duplicare l'edizione;
+verifica receipt `delivered`; consenso separato all'abilitazione settimanale.
+Una spedizione reale del sabato usa la normale Coda; un test immediato fuori
+orario richiede una procedura separata concordata, senza aggirare il calendario
+né cancellare lo storico di deduplicazione.

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from irina_inbox import PHONE_ID, WABA_ID
 from irina_processor import APIError, json_request, request
 
-BASE = '/Projects/Personale/Digest Fred'
+BASE = '/Projects/Digest Fred'
 TEMPLATE = 'irina_digest_settimanale_v1'
 BODY = ('Il digest economico settimanale richiesto è pronto: edizione {{1}}.\n'
         'In allegato il PDF di due pagine con notizie e sintesi interpretativa.\nIrina')

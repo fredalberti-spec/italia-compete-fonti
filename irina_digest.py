@@ -211,7 +211,7 @@ class Digest:
         from irina_digest_admin import continue_activation
         try:
             result=continue_activation(SimpleNamespace(inbox=self.p.inbox,whatsapp=self.p.whatsapp,
-                primary=self.p.primary,reader=self.reader,writer=self.writer))
+                primary=self.p.primary,reader=self.reader,writer=self.client))
             if result and result!=getattr(self,'last_activation_result',None):
                 print(json.dumps({'event':'irina_digest_activation',**result}),flush=True)
             self.last_activation_result=result

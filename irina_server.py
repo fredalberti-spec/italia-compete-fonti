@@ -36,12 +36,14 @@ def main():
                                '--workers','1','--threads','4','--timeout','30','irina_inbox:application'])
     from irina_email import run as email_run
     from irina_publications import run as publications_run
+    from irina_digest import run as digest_run
     from irina_notes import make_index, run as notes_run
     email_stop = threading.Event()
     processor.notes = make_index(root, os.environ['IRINA_DROPBOX_REFRESH_TOKEN'], os.environ['DROPBOX_APP_KEY'])
     threading.Thread(target=notes_run, args=(processor.notes, email_stop), daemon=True).start()
     threading.Thread(target=email_run, args=(processor, email_stop), daemon=True).start()
     threading.Thread(target=publications_run, args=(processor, email_stop), daemon=True).start()
+    threading.Thread(target=digest_run, args=(processor, email_stop), daemon=True).start()
     stopping = False
     def stop(*_):
         nonlocal stopping

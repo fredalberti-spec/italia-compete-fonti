@@ -67,6 +67,9 @@ class Inbox:
                 CREATE TABLE IF NOT EXISTS publications (
                     key TEXT PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL,
                     message_id TEXT, error TEXT);
+                CREATE TABLE IF NOT EXISTS digests (
+                    key TEXT PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL,
+                    message_id TEXT, error TEXT);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
                 CREATE TABLE IF NOT EXISTS receipts (
                     id TEXT, status TEXT, stamp TEXT, PRIMARY KEY(id,status));
@@ -95,7 +98,8 @@ class Inbox:
                         # Store receipts only for known assistant replies, never other contacts.
                         if (db.execute('SELECT 1 FROM inbox WHERE reply_id=?', (receipt.get('id'),)).fetchone()
                                 or db.execute('SELECT 1 FROM outbox WHERE message_id=?',(receipt.get('id'),)).fetchone()
-                                or db.execute('SELECT 1 FROM publications WHERE message_id=?',(receipt.get('id'),)).fetchone()):
+                                or db.execute('SELECT 1 FROM publications WHERE message_id=?',(receipt.get('id'),)).fetchone()
+                                or db.execute('SELECT 1 FROM digests WHERE message_id=?',(receipt.get('id'),)).fetchone()):
                             db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?,?)',
                                 (receipt['id'], receipt.get('status', ''), str(receipt.get('timestamp', ''))))
                     for message in value.get('messages', []):

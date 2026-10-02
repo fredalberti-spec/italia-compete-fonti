@@ -35,7 +35,7 @@ def select_test(path,digest):
 def prepare_activation(p):
     if p.primary not in p.whatsapp.owners:raise ValueError('PrimaryNotOwner')
     # Explicit operator opt-in; the normal worker never creates this request.
-    Budget(p.inbox,time.time).quote('MARKETING',p.primary)
+    Budget(p.inbox,time.time,wa=p.whatsapp).quote('MARKETING',p.primary)
     frozen=json.dumps({'test_file':TEST_FILE,'test_sha256':TEST_HASH},sort_keys=True)
     with p.inbox.db() as db:
         existing=db.execute('SELECT value FROM settings WHERE key=?',(ACTIVATION_REQUEST,)).fetchone()
@@ -137,7 +137,7 @@ def test(p):
     if previous:raise ValueError('PreviousTestAttemptExists')
     t=approved_template(p.whatsapp)
     if not t:raise ValueError('DocumentTemplateNotApproved')
-    budget=Budget(p.inbox,time.time)
+    budget=Budget(p.inbox,time.time,wa=p.whatsapp)
     micros,category=budget.quote(t.get('category'),p.primary)
     data=mockup(p)
     mid=upload_pdf(p.whatsapp,data)
@@ -166,16 +166,21 @@ def activate(p):
     if not any(x['status']=='delivered' for x in r['receipts']):raise ValueError('TestDeliveryNotVerified')
     t=approved_template(p.whatsapp)
     if not t:raise ValueError('DocumentTemplateNotApproved')
-    Budget(p.inbox,time.time).quote(t.get('category'),p.primary)
+    Budget(p.inbox,time.time,wa=p.whatsapp).quote(t.get('category'),p.primary)
     with p.inbox.db() as db:
         db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(ACTIVATION,'true'))
         db.execute('DELETE FROM settings WHERE key=?',(ACTIVATION_REQUEST,))
     return {'digest_delivery_enabled':True,'annual_gross_limit_eur':5}
 
 
+def tax_renewal(p):
+    from irina_digest_tax import configure
+    return configure(p.inbox,p.whatsapp,p.primary)
+
+
 def main():
     global TEST_FILE,TEST_HASH,TEST_KEY
-    parser=argparse.ArgumentParser();parser.add_argument('command',choices=['template','test','status','activate','prepare-activation','rates'])
+    parser=argparse.ArgumentParser();parser.add_argument('command',choices=['template','test','status','activate','prepare-activation','rates','tax-renewal'])
     parser.add_argument('--test-file');parser.add_argument('--test-sha256')
     args=parser.parse_args();command=args.command
     if args.test_file or args.test_sha256:
@@ -187,9 +192,9 @@ def main():
     try:
         p=context()
         if command=='rates':
-            from irina_digest_costs import live_rates
-            result={'meta_rates_eur':live_rates()}
-        else:result={'template':template,'test':test,'status':report,'activate':activate,'prepare-activation':prepare_activation}[command](p)
+            from irina_digest_costs import live_rates,rate_snapshot
+            result={'meta_rates_eur':live_rates(snapshot=rate_snapshot(p.inbox))}
+        else:result={'template':template,'test':test,'status':report,'activate':activate,'prepare-activation':prepare_activation,'tax-renewal':tax_renewal}[command](p)
         print(json.dumps(result,ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({'blocked':str(exc) if isinstance(exc,CostBlocked) else type(exc).__name__}))

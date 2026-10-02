@@ -1,7 +1,9 @@
 # CONTROLUCE — contratto definitivo di deposito e rilascio
 
 Il servizio esistente consegna; il coordinatore produce e verifica il PDF.
-Nessuna generazione autonoma configurata. Rubrica: **La domanda strategica della settimana**.
+Produttore coordinato separatamente: sabato 06:30 Europe/Rome, fonti e bundle
+grafico approvati, prima edizione 03/10/2026 numero 1. Il servizio di consegna
+non genera contenuti. Rubrica: **La domanda strategica della settimana**.
 
 ## Deposito
 
@@ -60,7 +62,7 @@ solo dopo ricevuta delivered e costo nuovamente verificato. Nessuna edizione
 reale disponibile finché il produttore non deposita PDF e manifest verificati.
 
 Comandi operatore sul servizio esistente: `template`, `rates`, `test`, `status`,
-`activate`, `prepare-activation` via `python irina_digest_admin.py`.
+`activate`, `prepare-activation`, `tax-renewal` via `python irina_digest_admin.py`.
 Usare per tutti stessa coppia `--test-file` e `--test-sha256` v7 sopra.
 
 ## Campi tariffari privati e rinnovo
@@ -81,7 +83,21 @@ scadenza, tentativi al massimo orari: riscarica fonte e card, verifica hash e
 prezzi contro policy; salva nuovo snapshot sette giorni in setting dedicato
 `digest_verified_rate_snapshot_v1`. Nessuna proroga su cambi, errori o evidenza
 già scaduta. Cambi link/listino richiedono nuova verifica della fonte corrente.
-Il rinnovo automatico del listino **non rinnova l'evidenza fiscale**:
-la scadenza privata corrente resta 09/10/2026 00:00 UTC, cioè 02:00 Europe/Rome.
-Occorre rinnovo della verifica fiscale prima di quella data per proseguire.
+Il comando esplicito `tax-renewal` abilita un secondo gate: rilegge il testo
+fiscale pubblico Meta applicabile all'Italia e la riga IVA italiana della fonte
+UE (22%), verifica valuta WABA EUR tramite API esistente, evidenza privata del
+contesto di fatturazione già verificato e hash del codice del trasporto diretto.
+Il moltiplicatore prudenziale resta 1.22, nessuna detrazione presunta. Il codice
+non usa intermediari per la consegna; una modifica del trasporto richiede nuova
+verifica operatore. Le schermate fiscali private dell'account non vengono
+ricontrollate automaticamente: modifiche volontarie a paese/fornitore/commissioni
+di fatturazione vanno segnalate e riconciliate prima di inviare.
+
+Prima di ogni preventivo rilegge fonti pubbliche, valuta e trasporto e confronta
+i fingerprint. Due giorni prima della scadenza, al massimo ogni ora, prolunga
+la validità fiscale di sette giorni solo dopo verifica fresca e invariata.
+Non modifica aliquota, prezzi, categoria o limite; non riattiva evidenza scaduta.
+Cambi di testo fiscale/riga IVA, errori, valuta o trasporto diversi bloccano.
+`Esiti/Verifica-costi.json` espone scadenze, rinnovo abilitato ed eventuale blocco,
+senza dati identificativi. Il produttore può consultarlo prima del deposito.
 Non serve una nuova conferma settimanale del destinatario; servono evidenze valide.

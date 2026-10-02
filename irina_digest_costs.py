@@ -143,8 +143,8 @@ def renew_rates(inbox, now, lookup=live_rates):
 
 
 class Budget:
-    def __init__(self,inbox,now,rates=live_rates):
-        self.inbox,self.now,self.rates=inbox,now,rates
+    def __init__(self,inbox,now,rates=live_rates,wa=None):
+        self.inbox,self.now,self.rates,self.wa=inbox,now,rates,wa
 
     def quote(self,category,recipient):
         with self.inbox.db() as db:
@@ -159,6 +159,8 @@ class Budget:
                 raise CostBlocked('GrossCostPolicyExpiredOrInvalid')
             multiplier=Decimal(policy['gross_multiplier'])
             if not multiplier.is_finite() or not 1<=multiplier<=3:raise CostBlocked('InvalidGrossMultiplier')
+            from irina_digest_tax import verify
+            verify(self.inbox,policy,self.wa,recipient)
             current=self.rates(snapshot=rate_snapshot(self.inbox)) if self.rates is live_rates else self.rates()
             expected=policy['meta_rates_eur']
             if set(current)!=set(expected) or any(Decimal(current[k])!=Decimal(expected[k]) for k in current):

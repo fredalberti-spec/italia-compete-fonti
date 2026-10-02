@@ -103,7 +103,7 @@ class Digest:
                        if client is None and getattr(processor, 'notes', None) else self.client)
         self.last_reports = {}
         self.now, self.enabled = now, enabled
-        self.budget = Budget(self.p.inbox, now)
+        self.budget = Budget(self.p.inbox, now,wa=self.p.whatsapp)
         with self.p.inbox.db() as db:
             db.execute("UPDATE digests SET state='uncertain', error='InterruptedSend' WHERE state='sending'")
             db.execute("UPDATE digest_tests SET state='uncertain', error='InterruptedSend' WHERE state='sending'")
@@ -205,14 +205,47 @@ class Digest:
         self.report(key)
 
     def step(self):
+        from irina_digest_tax import renew
+        try:
+            refreshed=renew(self.p.inbox,self.p.whatsapp,self.p.primary,self.now())
+            if refreshed:
+                self.last_tax_result=refreshed
+                print(json.dumps({'event':'irina_digest_tax',**refreshed}),flush=True)
+        except Exception as exc:
+            result={'blocked':str(exc) if isinstance(exc,CostBlocked) else type(exc).__name__}
+            if result!=getattr(self,'last_tax_result',None):
+                print(json.dumps({'event':'irina_digest_tax',**result}),flush=True)
+            self.last_tax_result=result
         try:
             refreshed=renew_rates(self.p.inbox,self.now())
-            if refreshed:print(json.dumps({'event':'irina_digest_rates',**refreshed}),flush=True)
+            if refreshed:
+                self.last_rate_result=refreshed
+                print(json.dumps({'event':'irina_digest_rates',**refreshed}),flush=True)
         except Exception as exc:
             result={'blocked':str(exc) if isinstance(exc,CostBlocked) else type(exc).__name__}
             if result!=getattr(self,'last_rate_result',None):
                 print(json.dumps({'event':'irina_digest_rates',**result}),flush=True)
             self.last_rate_result=result
+        # Dedicated status for the producer: expiry or renewal failure is visible
+        # before a real edition is deposited, without messages or new endpoints.
+        try:
+            from irina_digest_costs import POLICY_KEY,rate_snapshot
+            from irina_digest_tax import RENEWAL_KEY
+            with self.p.inbox.db() as db:
+                row=db.execute('SELECT value FROM settings WHERE key=?',(POLICY_KEY,)).fetchone()
+                automatic=db.execute('SELECT 1 FROM settings WHERE key=?',(RENEWAL_KEY,)).fetchone()
+            status={'annual_gross_limit_eur':5,'tax_auto_renewal_enabled':bool(automatic),
+                'tax_valid_until':json.loads(row['value'])['valid_until'] if row else None,
+                'rates_valid_until':rate_snapshot(self.p.inbox)['valid_until'],
+                'tax_renewal':getattr(self,'last_tax_result',None),
+                'rates_renewal':getattr(self,'last_rate_result',None)}
+            body=json.dumps(status,sort_keys=True).encode()
+            if body!=getattr(self,'last_cost_report',None):
+                self.client.files_upload(body,BASE+'/Esiti/Verifica-costi.json',
+                    mode=__import__('dropbox').files.WriteMode.overwrite,mute=True)
+                self.last_cost_report=body
+        except Exception as exc:
+            print(json.dumps({'event':'irina_digest_cost_report_error','error':type(exc).__name__}),flush=True)
         # Existing digest loop finishes an explicitly requested provision only
         # after exact Meta approval, verified gross cost, and a delivered test.
         from types import SimpleNamespace

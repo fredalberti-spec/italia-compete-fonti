@@ -1,4 +1,5 @@
 import tempfile
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -11,7 +12,7 @@ class Admin(unittest.TestCase):
     def setUp(self):
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
         self.p=SimpleNamespace(inbox=Inbox(tmp.name),primary='390000000001',
-            whatsapp=SimpleNamespace(token='fixture'),writer=Mock())
+            whatsapp=SimpleNamespace(token='fixture',owners={'390000000001'}),writer=Mock())
 
     @patch('irina_digest_admin.template_json',side_effect=[{'data':[]},{'status':'PENDING'}])
     @patch('irina_digest_admin.sample_handle',return_value='fixture-handle')
@@ -63,6 +64,27 @@ class Admin(unittest.TestCase):
             self.assertIsNone(db.execute('SELECT value FROM settings WHERE key=?',(admin.ACTIVATION,)).fetchone())
         budget.return_value.quote.side_effect=None
         self.assertTrue(admin.activate(self.p)['digest_delivery_enabled'])
+
+    @patch('irina_digest_admin.activate')
+    @patch('irina_digest_admin.test')
+    @patch('irina_digest_admin.approved_template',return_value=None)
+    def test_automatic_finish_waits_for_approval_and_delivered(self,approved,send,activate):
+        with self.p.inbox.db() as db:
+            db.execute('INSERT INTO settings VALUES (?,?)',(admin.ACTIVATION_REQUEST,json.dumps(
+                {'test_file':admin.TEST_FILE,'test_sha256':admin.TEST_HASH})))
+        self.assertEqual(admin.continue_activation(self.p)['state'],'waiting_for_template')
+        send.assert_not_called();activate.assert_not_called()
+        approved.return_value={'category':'MARKETING'}
+        send.return_value={'state':'accepted','receipts':[]}
+        self.assertEqual(admin.continue_activation(self.p)['state'],'waiting_for_delivery_receipt')
+        activate.assert_not_called()
+        send.return_value={'state':'uncertain','receipts':[]}
+        self.assertEqual(admin.continue_activation(self.p)['state'],'uncertain')
+        activate.assert_not_called()
+        send.return_value={'state':'accepted','receipts':[{'status':'delivered'}]}
+        activate.return_value={'digest_delivery_enabled':True}
+        self.assertTrue(admin.continue_activation(self.p)['digest_delivery_enabled'])
+        activate.assert_called_once()
 
 
 if __name__=='__main__':unittest.main()

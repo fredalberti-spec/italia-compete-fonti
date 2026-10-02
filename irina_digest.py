@@ -205,6 +205,21 @@ class Digest:
         self.report(key)
 
     def step(self):
+        # Existing digest loop finishes an explicitly requested provision only
+        # after exact Meta approval, verified gross cost, and a delivered test.
+        from types import SimpleNamespace
+        from irina_digest_admin import continue_activation
+        try:
+            result=continue_activation(SimpleNamespace(inbox=self.p.inbox,whatsapp=self.p.whatsapp,
+                primary=self.p.primary,reader=self.reader,writer=self.writer))
+            if result and result!=getattr(self,'last_activation_result',None):
+                print(json.dumps({'event':'irina_digest_activation',**result}),flush=True)
+            self.last_activation_result=result
+        except Exception as exc:
+            result={'blocked':str(exc) if isinstance(exc,CostBlocked) else type(exc).__name__}
+            if result!=getattr(self,'last_activation_result',None):
+                print(json.dumps({'event':'irina_digest_activation',**result}),flush=True)
+            self.last_activation_result=result
         import dropbox
         result = self.reader.files_list_folder(BASE + '/Coda', recursive=False)
         entries = list(result.entries)

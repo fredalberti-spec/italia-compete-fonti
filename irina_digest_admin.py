@@ -21,6 +21,40 @@ TEST_KEY='mockup-'+TEST_HASH[:16]
 LABEL='CONTROLUCE — PROVA MOCK-UP; non rassegna verificata; contenuti illustrativi'
 SUBMISSION='digest_template_submission_v1'
 ACTIVATION='digest_delivery_active_v1'
+ACTIVATION_REQUEST='digest_activation_request_v1'
+
+
+def select_test(path,digest):
+    global TEST_FILE,TEST_HASH,TEST_KEY
+    if (not isinstance(path,str) or not re.fullmatch(re.escape(BASE)+r'/Test/[A-Za-z0-9_.-]+\.pdf',path)
+            or not isinstance(digest,str) or not re.fullmatch('[a-f0-9]{64}',digest)):
+        raise ValueError('InvalidDedicatedTestReference')
+    TEST_FILE,TEST_HASH,TEST_KEY=path,digest,'mockup-'+digest[:16]
+
+
+def prepare_activation(p):
+    if p.primary not in p.whatsapp.owners:raise ValueError('PrimaryNotOwner')
+    # Explicit operator opt-in; the normal worker never creates this request.
+    Budget(p.inbox,time.time).quote('MARKETING',p.primary)
+    frozen=json.dumps({'test_file':TEST_FILE,'test_sha256':TEST_HASH},sort_keys=True)
+    with p.inbox.db() as db:
+        existing=db.execute('SELECT value FROM settings WHERE key=?',(ACTIVATION_REQUEST,)).fetchone()
+        if existing and existing['value']!=frozen:raise ValueError('ActivationRequestConflict')
+        db.execute('INSERT OR IGNORE INTO settings VALUES (?,?)',(ACTIVATION_REQUEST,frozen))
+    return {'state':'waiting_for_template','test_only':True,'annual_gross_limit_eur':5}
+
+
+def continue_activation(p):
+    with p.inbox.db() as db:
+        row=db.execute('SELECT value FROM settings WHERE key=?',(ACTIVATION_REQUEST,)).fetchone()
+    if not row:return None
+    request=json.loads(row['value']);select_test(request['test_file'],request['test_sha256'])
+    if not approved_template(p.whatsapp):return {'state':'waiting_for_template'}
+    result=test(p)  # persistent intention and budget guard apply to this path too
+    if result.get('state')!='accepted':return {'state':result.get('state','blocked')}
+    if not any(r['status']=='delivered' for r in result['receipts']):
+        return {'state':'waiting_for_delivery_receipt'}
+    return activate(p)
 
 
 def context():
@@ -94,6 +128,7 @@ def report(p):
 
 
 def test(p):
+    if p.primary not in p.whatsapp.owners:raise ValueError('PrimaryNotOwner')
     with p.inbox.db() as db:
         row=db.execute('SELECT state FROM digest_tests WHERE key=?',(TEST_KEY,)).fetchone()
     if row:return report(p)  # one attempt across restarts, never an edition
@@ -132,13 +167,15 @@ def activate(p):
     t=approved_template(p.whatsapp)
     if not t:raise ValueError('DocumentTemplateNotApproved')
     Budget(p.inbox,time.time).quote(t.get('category'),p.primary)
-    with p.inbox.db() as db:db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(ACTIVATION,'true'))
+    with p.inbox.db() as db:
+        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(ACTIVATION,'true'))
+        db.execute('DELETE FROM settings WHERE key=?',(ACTIVATION_REQUEST,))
     return {'digest_delivery_enabled':True,'annual_gross_limit_eur':5}
 
 
 def main():
     global TEST_FILE,TEST_HASH,TEST_KEY
-    parser=argparse.ArgumentParser();parser.add_argument('command',choices=['template','test','status','activate','rates'])
+    parser=argparse.ArgumentParser();parser.add_argument('command',choices=['template','test','status','activate','prepare-activation','rates'])
     parser.add_argument('--test-file');parser.add_argument('--test-sha256')
     args=parser.parse_args();command=args.command
     if args.test_file or args.test_sha256:
@@ -146,14 +183,13 @@ def main():
                 or not re.fullmatch(re.escape(BASE)+r'/Test/[A-Za-z0-9_.-]+\.pdf',args.test_file)
                 or not re.fullmatch('[a-f0-9]{64}',args.test_sha256)):
             parser.error('Both a dedicated Test PDF path and exact SHA-256 are required')
-        TEST_FILE,TEST_HASH=args.test_file,args.test_sha256
-        TEST_KEY='mockup-'+TEST_HASH[:16]
+        select_test(args.test_file,args.test_sha256)
     try:
         p=context()
         if command=='rates':
             from irina_digest_costs import live_rates
             result={'meta_rates_eur':live_rates()}
-        else:result={'template':template,'test':test,'status':report,'activate':activate}[command](p)
+        else:result={'template':template,'test':test,'status':report,'activate':activate,'prepare-activation':prepare_activation}[command](p)
         print(json.dumps(result,ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({'blocked':str(exc) if isinstance(exc,CostBlocked) else type(exc).__name__}))

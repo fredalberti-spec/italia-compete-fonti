@@ -4,7 +4,8 @@ Canale distinto da Italia Compete, namespace Dropbox `2166447024`.
 Destinatario esclusivo: `IRINA_PRIMARY_PHONE` presente nell'allowlist owner esistente.
 Nessuna lettura Mail, produzione generativa, nuovo servizio o ampliamento OAuth.
 L'invio è **disabilitato per default**. Solo dopo verifica Meta/costi/end-to-end,
-attivazione esplicita con `IRINA_DIGEST_ENABLED=true` sul servizio esistente.
+attivazione esplicita con `python irina_digest_admin.py activate` sul servizio
+esistente dopo il gate di prova e costo. Lasciare `IRINA_DIGEST_ENABLED` disattivato.
 
 ## Deposito del produttore
 
@@ -48,7 +49,7 @@ una sostituzione automatica; riconciliazione manuale per errori e invii incerti.
 PDF <=10 MiB, non cifrato, esattamente due pagine A4 verticali, MediaBox e CropBox
 coincidenti, rotazione zero, UserUnit 1. Hash verificato sui byte scaricati.
 Il produttore verifica visualmente entrambe le pagine e ogni fonte, con cinque
-cose da sapere sviluppate, titoli tematici immediati, notizie economiche italiane,
+cose da sapere sviluppate e cinque brevi, titoli tematici immediati, notizie economiche italiane,
 globali e imprese, sintesi interpretativa, La lente della ricerca, La connessione
 che conta e Domanda per l’aula. Nessun contenuto inventato. L'attestazione e la
 lista fonti sono obbligatorie: il servizio non può provarne la veridicità né la

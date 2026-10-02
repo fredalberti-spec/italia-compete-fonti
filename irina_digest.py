@@ -173,7 +173,7 @@ class Digest:
         mid = upload_pdf(self.p.whatsapp, data)
         document = {'id':mid, 'filename':'CONTROLUCE-' + key + '.pdf'}
         payload = {'messaging_product':'whatsapp', 'to':self.p.primary, 'type':'document',
-                   'document':dict(document, caption='Digest economico settimanale | ' + key + '\nIrina')}
+                   'document':dict(document, caption='CONTROLUCE | ' + key + '\nIrina')}
         if not window:
             payload = {'messaging_product':'whatsapp','to':self.p.primary,'type':'template',
                 'template':{'name':TEMPLATE,'language':{'code':'it'},'components':[

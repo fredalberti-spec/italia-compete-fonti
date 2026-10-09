@@ -79,11 +79,11 @@ class Email(unittest.TestCase):
             with self.assertRaises(EmailBlocked):free_quota(usage)
 
     def test_sender_name_formats_from_preserves_signature_and_dedup_address(self):
-        self.env['IRINA_DIGEST_EMAIL_FROM']='Example Producer <irina@example.org>'
+        self.env['IRINA_DIGEST_EMAIL_FROM']='Irina Merovan <irina@example.org>'
         self.email.process(self.job)
         payload=self.provider.call.call_args.args[1]
-        self.assertEqual(payload['from'],'Example Producer <irina@example.org>')
-        self.assertTrue(payload['text'].endswith('\nIrina'))
+        self.assertEqual(payload['from'],'Irina Merovan <irina@example.org>')
+        self.assertEqual(payload['text'],'In allegato CONTROLUCE, il digest economico settimanale di due pagine.\nIrina Merovan\nExecutive Assistant to Professor Alberti')
         self.assertEqual(json.loads(self.row()['payload'])['sender'],'irina@example.org')
         self.env['IRINA_DIGEST_EMAIL_FROM']='Renamed Producer <irina@example.org>'
         self.provider.call.return_value={'to':['owner@example.org'],'last_event':'delivered'}
@@ -179,6 +179,7 @@ class Transport(unittest.TestCase):
             self.assertEqual(result['sending_address'],'elio@example.org')
             self.assertEqual(result['sending_name'],'Example Producer')
             self.assertEqual(result['sending_from'],'Example Producer <elio@example.org>')
+            self.assertEqual(result['sending_signature'],'Irina Merovan\nExecutive Assistant to Professor Alberti')
             requests=[c.args[0] for c in build.return_value.open.call_args_list]
             self.assertEqual([r.get_method() for r in requests],['GET','GET'])
             self.assertEqual([r.full_url for r in requests],['https://api.resend.com/domains?limit=100','https://api.resend.com/usage'])

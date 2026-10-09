@@ -17,6 +17,7 @@ from irina_digest import BASE,validate,validate_pdf,MAX_BYTES
 from irina_processor import NoRedirect
 
 MIN_EDITION=date(2026,10,10)
+SIGNATURE="Irina Merovan\nExecutive Assistant to Professor Alberti"
 
 
 class EmailBlocked(ValueError):
@@ -122,6 +123,7 @@ class DigestEmail:
             result['sending_address']=sender
             result['sending_name']=sender_name
             result['sending_from']=formataddr((sender_name,sender))
+            result['sending_signature']=SIGNATURE
         return result
 
     def status(self):
@@ -180,7 +182,7 @@ class DigestEmail:
             self.report(edition);return
         key='controluce-'+edition+'-'+hashlib.sha256(frozen.encode()).hexdigest()
         payload={'from':formataddr((sender_name,sender)),'to':[recipient],'subject':'CONTROLUCE | '+str(job['edition_number']).zfill(3)+' | '+edition,
-                 'text':'In allegato CONTROLUCE, il digest economico settimanale di due pagine.\nIrina',
+                 'text':'In allegato CONTROLUCE, il digest economico settimanale di due pagine.\n'+SIGNATURE,
                  'attachments':[{'filename':'CONTROLUCE-'+edition+'.pdf','content':base64.b64encode(data).decode()}]}
         with self.inbox.db() as db:
             db.execute('BEGIN IMMEDIATE')

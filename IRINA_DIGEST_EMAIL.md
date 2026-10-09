@@ -41,3 +41,16 @@ edizione reale. Nessun invio email è stato effettuato durante l'implementazione
 Fonti provider: https://resend.com/docs/api-reference/usage/retrieve-usage ,
 https://resend.com/docs/api-reference/domains/list-domains ,
 https://resend.com/docs/api-reference/emails/send-email .
+
+## Firma della distribuzione
+
+Irina distribuisce il digest; la produzione editoriale resta separata. Il testo
+termina esattamente con queste due righe:
+
+```text
+Irina Merovan
+Executive Assistant to Professor Alberti
+```
+
+Il preflight espone `sending_signature` e `sending_from` per verificare il
+contenuto configurato senza inviare una prova.

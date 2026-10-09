@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import date,datetime
+from email.utils import formataddr
 from zoneinfo import ZoneInfo
 from irina_digest import BASE,validate,validate_pdf,MAX_BYTES
 from irina_processor import NoRedirect
@@ -76,6 +77,18 @@ def address(value):
     return isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_.+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}',value) is not None
 
 
+def sender_parts(value):
+    if address(value):return '',value
+    if not isinstance(value,str):raise EmailBlocked('InvalidDigestEmailSender')
+    match=re.fullmatch(r'([^<>]+) <([^<>]+)>',value)
+    if not match:raise EmailBlocked('InvalidDigestEmailSender')
+    name,mailbox=match.groups()
+    if (name!=name.strip() or not 1<=len(name)<=100 or any(ord(c)<32 or ord(c)==127 for c in name)
+            or '"' in name or chr(92) in name or not address(mailbox)):
+        raise EmailBlocked('InvalidDigestEmailSender')
+    return name,mailbox
+
+
 class DigestEmail:
     def __init__(self,inbox,reader,writer,now=time.time,env=None,provider=None):
         self.inbox,self.reader,self.writer,self.now=inbox,reader,writer,now
@@ -94,17 +107,21 @@ class DigestEmail:
         if domains.get('has_more'):raise EmailBlocked('ResendDomainListIncomplete')
         verified=[d['name'] for d in domains.get('data',[]) if d.get('status')=='verified'
                   and d.get('capabilities',{}).get('sending')=='enabled']
-        sender=self.env.get('IRINA_DIGEST_EMAIL_FROM','')
+        configured_sender=self.env.get('IRINA_DIGEST_EMAIL_FROM','')
+        sender_name,sender=sender_parts(configured_sender)
         recipient=self.env.get('IRINA_DIGEST_EMAIL_TO','')
         quota=False;quota_error=None;quota_category=None
         try:quota=free_quota(self.provider.call('/usage'))
         except EmailBlocked as e:quota_error=str(e);quota_category=getattr(e,'category','unknown')
         sender_verified=address(sender) and sender.split('@')[1].lower() in [d.lower() for d in verified]
         result={'enabled':self.env.get('IRINA_DIGEST_EMAIL_ENABLED')=='true',
-                'sender_configured':bool(sender),'sender_verified':sender_verified,
+                'sender_configured':bool(configured_sender),'sender_verified':sender_verified,
                 'recipient_configured':address(recipient),'zero_cost_quota_verified':quota,
                 'quota_error':quota_error,'quota_error_category':quota_category}
-        if sender_verified:result['sending_address']=sender
+        if sender_verified:
+            result['sending_address']=sender
+            result['sending_name']=sender_name
+            result['sending_from']=formataddr((sender_name,sender))
         return result
 
     def status(self):
@@ -136,7 +153,8 @@ class DigestEmail:
         # Coordinator owns the immediate 001 email. This route never backfills it.
         if date.fromisoformat(edition)<MIN_EDITION:return
         if self.env.get('IRINA_DIGEST_EMAIL_ENABLED')!='true' or self.now()<due:return
-        recipient=self.env.get('IRINA_DIGEST_EMAIL_TO','');sender=self.env.get('IRINA_DIGEST_EMAIL_FROM','')
+        recipient=self.env.get('IRINA_DIGEST_EMAIL_TO','')
+        sender_name,sender=sender_parts(self.env.get('IRINA_DIGEST_EMAIL_FROM',''))
         if not address(recipient) or not address(sender):raise EmailBlocked('DigestEmailAddressesNotConfigured')
         frozen=json.dumps({'manifest':job,'recipient':recipient,'sender':sender},sort_keys=True)
         with self.inbox.db() as db:
@@ -161,7 +179,7 @@ class DigestEmail:
                 (str(e) if isinstance(e,EmailBlocked) else type(e).__name__,edition))
             self.report(edition);return
         key='controluce-'+edition+'-'+hashlib.sha256(frozen.encode()).hexdigest()
-        payload={'from':sender,'to':[recipient],'subject':'CONTROLUCE | '+str(job['edition_number']).zfill(3)+' | '+edition,
+        payload={'from':formataddr((sender_name,sender)),'to':[recipient],'subject':'CONTROLUCE | '+str(job['edition_number']).zfill(3)+' | '+edition,
                  'text':'In allegato CONTROLUCE, il digest economico settimanale di due pagine.\nIrina',
                  'attachments':[{'filename':'CONTROLUCE-'+edition+'.pdf','content':base64.b64encode(data).decode()}]}
         with self.inbox.db() as db:

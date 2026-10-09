@@ -7,7 +7,9 @@ l'invio immediato. Prima edizione ammissibile: 10/10/2026.
 
 ## Configurazione privata e prerequisiti
 
-`IRINA_DIGEST_EMAIL_FROM`: singolo mittente verificato, senza display name.
+`IRINA_DIGEST_EMAIL_FROM`: singolo mittente verificato, indirizzo oppure `Nome Cognome <indirizzo>`.
+Il dominio e la deduplicazione usano il solo indirizzo; il nome viene formattato
+nel campo From senza cambiare la firma del testo.
 `IRINA_DIGEST_EMAIL_TO`: unico destinatario concordato, configurato privatamente.
 `IRINA_DIGEST_EMAIL_PREFLIGHT=true`: abilita solo verifica provider e report.
 `IRINA_DIGEST_EMAIL_ENABLED=true`: attiva consegna, solo dopo verifica completa.

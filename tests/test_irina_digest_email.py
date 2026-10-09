@@ -8,7 +8,7 @@ from unittest.mock import Mock,patch
 from pypdf import PdfWriter
 from irina_inbox import Inbox
 from irina_digest import BASE,validate
-from irina_digest_email import DigestEmail,free_quota,EmailBlocked,Resend,ResendHTTPError
+from irina_digest_email import DigestEmail,free_quota,EmailBlocked,Resend,ResendHTTPError,sender_parts
 
 
 class Email(unittest.TestCase):
@@ -78,6 +78,19 @@ class Email(unittest.TestCase):
             usage['emails']['daily']={'used':used,'limit':limit}
             with self.assertRaises(EmailBlocked):free_quota(usage)
 
+    def test_sender_name_formats_from_preserves_signature_and_dedup_address(self):
+        self.env['IRINA_DIGEST_EMAIL_FROM']='Example Producer <irina@example.org>'
+        self.email.process(self.job)
+        payload=self.provider.call.call_args.args[1]
+        self.assertEqual(payload['from'],'Example Producer <irina@example.org>')
+        self.assertTrue(payload['text'].endswith('\nIrina'))
+        self.assertEqual(json.loads(self.row()['payload'])['sender'],'irina@example.org')
+        self.env['IRINA_DIGEST_EMAIL_FROM']='Renamed Producer <irina@example.org>'
+        self.provider.call.return_value={'to':['owner@example.org'],'last_event':'delivered'}
+        self.email.process(self.job)
+        self.assertEqual(self.row()['state'],'delivered')
+        self.assertEqual(sum(len(c.args)>1 for c in self.provider.call.call_args_list),1)
+
     def test_real_transport_4xx_rejected_5xx_and_timeout_uncertain_never_retry(self):
         import urllib.error
         for error,state in [(urllib.error.HTTPError('https://api.resend.com/emails',403,'secret',{},
@@ -102,6 +115,14 @@ class Transport(unittest.TestCase):
     def error(self,code,body):
         import urllib.error
         return urllib.error.HTTPError('https://api.resend.com/domains',code,'raw-secret-message',{},io.BytesIO(body))
+
+    def test_sender_parser_rejects_injection_and_multiple_mailboxes(self):
+        self.assertEqual(sender_parts('Example Producer <irina@example.org>'),('Example Producer','irina@example.org'))
+        self.assertEqual(sender_parts('irina@example.org'),('','irina@example.org'))
+        for value in ['Example\r\nBcc: victim@example.org <irina@example.org>',
+                      'Example <irina@example.org>, Another <another@example.org>',
+                      ' Example <irina@example.org>','Example <invalid>',None]:
+            with self.subTest(value=value),self.assertRaises(EmailBlocked):sender_parts(value)
 
     def test_requests_identification_timeout_redirect_and_idempotency(self):
         from irina_processor import NoRedirect
@@ -145,7 +166,7 @@ class Transport(unittest.TestCase):
     def test_preflight_real_transport_only_gets_verified_domain_and_free_quota(self):
         with tempfile.TemporaryDirectory() as tmp,patch('irina_digest_email.urllib.request.build_opener') as build:
             inbox=Inbox(tmp);writer=Mock()
-            env={'IRINA_RESEND_API_KEY':'fixture-token','IRINA_DIGEST_EMAIL_FROM':'elio@example.org',
+            env={'IRINA_RESEND_API_KEY':'fixture-token','IRINA_DIGEST_EMAIL_FROM':'Example Producer <elio@example.org>',
                  'IRINA_DIGEST_EMAIL_TO':'owner@example.net','IRINA_DIGEST_EMAIL_ENABLED':'false',
                  'IRINA_DIGEST_EMAIL_PREFLIGHT':'true'}
             domain={'data':[{'name':'example.org','status':'verified','capabilities':{'sending':'enabled'}}]}
@@ -155,6 +176,9 @@ class Transport(unittest.TestCase):
             result=json.loads(writer.files_upload.call_args.args[0])
             self.assertFalse(result['enabled']);self.assertTrue(result['sender_verified'])
             self.assertTrue(result['zero_cost_quota_verified'])
+            self.assertEqual(result['sending_address'],'elio@example.org')
+            self.assertEqual(result['sending_name'],'Example Producer')
+            self.assertEqual(result['sending_from'],'Example Producer <elio@example.org>')
             requests=[c.args[0] for c in build.return_value.open.call_args_list]
             self.assertEqual([r.get_method() for r in requests],['GET','GET'])
             self.assertEqual([r.full_url for r in requests],['https://api.resend.com/domains?limit=100','https://api.resend.com/usage'])

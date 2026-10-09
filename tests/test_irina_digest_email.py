@@ -1,13 +1,14 @@
 import hashlib
+import json
 import io
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock,patch
 from pypdf import PdfWriter
 from irina_inbox import Inbox
 from irina_digest import BASE,validate
-from irina_digest_email import DigestEmail,free_quota,EmailBlocked
+from irina_digest_email import DigestEmail,free_quota,EmailBlocked,Resend,ResendHTTPError
 
 
 class Email(unittest.TestCase):
@@ -77,7 +78,94 @@ class Email(unittest.TestCase):
             usage['emails']['daily']={'used':used,'limit':limit}
             with self.assertRaises(EmailBlocked):free_quota(usage)
 
+    def test_real_transport_4xx_rejected_5xx_and_timeout_uncertain_never_retry(self):
+        import urllib.error
+        for error,state in [(urllib.error.HTTPError('https://api.resend.com/emails',403,'secret',{},
+                io.BytesIO(b'{"name":"invalid_permission","message":"fixture"}')),'rejected'),
+                (urllib.error.HTTPError('https://api.resend.com/emails',503,'secret',{},
+                io.BytesIO(b'{"name":"service_unavailable"}')),'uncertain'),(TimeoutError(),'uncertain')]:
+            with self.subTest(state=state),patch('irina_digest_email.urllib.request.build_opener') as build:
+                with self.inbox.db() as db:db.execute('DELETE FROM digest_emails')
+                self.email.provider=Resend('fixture-token');build.return_value.open.side_effect=error
+                self.email.process(self.job);self.email.process(self.job)
+                self.assertEqual(self.row()['state'],state);build.return_value.open.assert_called_once()
+
     def test_status_does_not_probe_accounts_before_safe_configuration(self):
         self.email.status();self.provider.call.assert_not_called()
+
+class Transport(unittest.TestCase):
+    def response(self,value):
+        response=Mock();response.read.return_value=value
+        response.__enter__=Mock(return_value=response);response.__exit__=Mock(return_value=False)
+        return response
+
+    def error(self,code,body):
+        import urllib.error
+        return urllib.error.HTTPError('https://api.resend.com/domains',code,'raw-secret-message',{},io.BytesIO(body))
+
+    def test_requests_identification_timeout_redirect_and_idempotency(self):
+        from irina_processor import NoRedirect
+        with patch('irina_digest_email.urllib.request.build_opener') as build:
+            build.return_value.open.return_value=self.response(b'{"id":"fixture"}')
+            client=Resend('fixture-token');client.call('/domains?limit=100')
+            request=build.return_value.open.call_args.args[0]
+            self.assertEqual(request.get_method(),'GET');self.assertEqual(request.data,None)
+            self.assertEqual(request.get_header('User-agent'),'Irina-CONTROLUCE/1.0')
+            self.assertEqual(request.get_header('Accept'),'application/json')
+            self.assertEqual(build.call_args.args,(NoRedirect,))
+            self.assertEqual(build.return_value.open.call_args.kwargs,{'timeout':25})
+            client.call('/emails',{'to':['fixture@example.org']},idempotency='stable-fixture')
+            request=build.return_value.open.call_args.args[0]
+            self.assertEqual(request.get_method(),'POST')
+            self.assertEqual(request.get_header('Idempotency-key'),'stable-fixture')
+            self.assertEqual(json.loads(request.data),{'to':['fixture@example.org']})
+
+    def test_error_categories_are_bounded_and_never_include_provider_text(self):
+        cases=[(b'{"name":"invalid_permission","message":"fixture-token"}','invalid_permission'),
+               (b'{"name":"untrusted","message":"fixture-token"}','unknown'),
+               (b'{"name":[]}','unknown'),(b'[]','unknown'),(b'<html>fixture-token</html>','unknown'),
+               (b'{"name":"invalid_permission"}'+b' '*8193,'unknown')]
+        for body,category in cases:
+            with self.subTest(category=category,len=len(body)),patch('irina_digest_email.urllib.request.build_opener') as build:
+                error=self.error(403,body);error.read=Mock(wraps=error.read)
+                build.return_value.open.side_effect=error
+                with self.assertRaises(ResendHTTPError) as caught:Resend('fixture-token').call('/domains')
+                self.assertEqual(str(caught.exception),'ResendHTTP403')
+                self.assertEqual(caught.exception.category,category)
+                error.read.assert_called_once_with(8193)
+                self.assertNotIn('fixture-token',repr(caught.exception))
+
+    def test_success_response_is_bounded_and_malformed_json_fails(self):
+        for body,exception in [(b' '*2_000_001,EmailBlocked),(b'{',ValueError)]:
+            with patch('irina_digest_email.urllib.request.build_opener') as build:
+                response=self.response(body);build.return_value.open.return_value=response
+                with self.assertRaises(exception):Resend('fixture-token').call('/usage')
+                response.read.assert_called_once_with(2_000_001)
+
+    def test_preflight_real_transport_only_gets_verified_domain_and_free_quota(self):
+        with tempfile.TemporaryDirectory() as tmp,patch('irina_digest_email.urllib.request.build_opener') as build:
+            inbox=Inbox(tmp);writer=Mock()
+            env={'IRINA_RESEND_API_KEY':'fixture-token','IRINA_DIGEST_EMAIL_FROM':'elio@example.org',
+                 'IRINA_DIGEST_EMAIL_TO':'owner@example.net','IRINA_DIGEST_EMAIL_ENABLED':'false',
+                 'IRINA_DIGEST_EMAIL_PREFLIGHT':'true'}
+            domain={'data':[{'name':'example.org','status':'verified','capabilities':{'sending':'enabled'}}]}
+            quota={'emails':{'daily':{'used':3,'limit':100},'monthly':{'used':10,'limit':3000}}}
+            build.return_value.open.side_effect=[self.response(json.dumps(v).encode()) for v in [domain,quota]]
+            email=DigestEmail(inbox,Mock(),writer,env=env);email.status()
+            result=json.loads(writer.files_upload.call_args.args[0])
+            self.assertFalse(result['enabled']);self.assertTrue(result['sender_verified'])
+            self.assertTrue(result['zero_cost_quota_verified'])
+            requests=[c.args[0] for c in build.return_value.open.call_args_list]
+            self.assertEqual([r.get_method() for r in requests],['GET','GET'])
+            self.assertEqual([r.full_url for r in requests],['https://api.resend.com/domains?limit=100','https://api.resend.com/usage'])
+
+    def test_preflight_reports_only_sanitized_http_category(self):
+        with tempfile.TemporaryDirectory() as tmp,patch('irina_digest_email.urllib.request.build_opener') as build:
+            build.return_value.open.side_effect=self.error(403,b'{"name":"invalid_permission","message":"fixture-token"}')
+            writer=Mock();email=DigestEmail(Inbox(tmp),Mock(),writer,env={'IRINA_RESEND_API_KEY':'fixture-token',
+                'IRINA_DIGEST_EMAIL_PREFLIGHT':'true','IRINA_DIGEST_EMAIL_ENABLED':'false'})
+            email.status();result=json.loads(writer.files_upload.call_args.args[0])
+            self.assertEqual(result,{'enabled':False,'blocked':'ResendHTTP403','error_category':'invalid_permission'})
+
 
 if __name__=='__main__':unittest.main()

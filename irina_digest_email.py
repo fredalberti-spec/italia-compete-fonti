@@ -22,10 +22,22 @@ class EmailBlocked(ValueError):
     pass
 
 
+ERROR_CATEGORIES=frozenset({'missing_api_key','restricted_api_key','suspended_api_key',
+    'invalid_api_key','invalid_permission','validation_error','rate_limit_exceeded',
+    'application_error','service_unavailable'})
+
+
+class ResendHTTPError(EmailBlocked):
+    def __init__(self,code,category='unknown'):
+        super().__init__('ResendHTTP'+str(code))
+        self.category=category
+
+
 class Resend:
     def __init__(self,key):self.key=key
     def call(self,path,payload=None,idempotency=None):
-        headers={'Authorization':'Bearer '+self.key,'Content-Type':'application/json'}
+        headers={'Authorization':'Bearer '+self.key,'Content-Type':'application/json',
+                 'Accept':'application/json','User-Agent':'Irina-CONTROLUCE/1.0'}
         if idempotency:headers['Idempotency-Key']=idempotency
         req=urllib.request.Request('https://api.resend.com'+path,
             data=json.dumps(payload).encode() if payload is not None else None,headers=headers)
@@ -34,7 +46,16 @@ class Resend:
                 data=r.read(2_000_001)
             if len(data)>2_000_000:raise EmailBlocked('ResendResponseTooLarge')
             return json.loads(data)
-        except urllib.error.HTTPError as e:raise EmailBlocked('ResendHTTP'+str(e.code)) from None
+        except urllib.error.HTTPError as e:
+            category='unknown'
+            try:
+                body=e.read(8193)
+                if len(body)<=8192:
+                    value=json.loads(body)
+                    name=value.get('name') if isinstance(value,dict) else None
+                    if isinstance(name,str) and name in ERROR_CATEGORIES:category=name
+            except Exception:pass
+            raise ResendHTTPError(e.code,category) from None
 
 
 def free_quota(usage):
@@ -75,14 +96,14 @@ class DigestEmail:
                   and d.get('capabilities',{}).get('sending')=='enabled']
         sender=self.env.get('IRINA_DIGEST_EMAIL_FROM','')
         recipient=self.env.get('IRINA_DIGEST_EMAIL_TO','')
-        quota=False;quota_error=None
+        quota=False;quota_error=None;quota_category=None
         try:quota=free_quota(self.provider.call('/usage'))
-        except EmailBlocked as e:quota_error=str(e)
+        except EmailBlocked as e:quota_error=str(e);quota_category=getattr(e,'category','unknown')
         sender_verified=address(sender) and sender.split('@')[1].lower() in [d.lower() for d in verified]
         result={'enabled':self.env.get('IRINA_DIGEST_EMAIL_ENABLED')=='true',
                 'sender_configured':bool(sender),'sender_verified':sender_verified,
                 'recipient_configured':address(recipient),'zero_cost_quota_verified':quota,
-                'quota_error':quota_error}
+                'quota_error':quota_error,'quota_error_category':quota_category}
         if sender_verified:result['sending_address']=sender
         return result
 
@@ -93,7 +114,9 @@ class DigestEmail:
             if self.env.get('IRINA_DIGEST_EMAIL_PREFLIGHT')!='true':
                 raise EmailBlocked('EmailSetupAwaitingSafeConfiguration')
             result=self.preflight()
-        except Exception as e:result={'enabled':False,'blocked':str(e) if isinstance(e,EmailBlocked) else type(e).__name__}
+        except Exception as e:
+            result={'enabled':False,'blocked':str(e) if isinstance(e,EmailBlocked) else type(e).__name__}
+            if isinstance(e,ResendHTTPError):result['error_category']=e.category
         body=json.dumps(result,sort_keys=True).encode()
         if body!=self.last_status:
             import dropbox

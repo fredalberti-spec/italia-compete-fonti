@@ -8,6 +8,7 @@ from unittest.mock import Mock
 from irina_inbox import Inbox
 from irina_digest_costs import CostBlocked,POLICY_KEY,Budget
 from irina_digest_tax import parse_public,verified_context,verify,renew,RENEWAL_KEY,EVIDENCE_KEY
+from irina_digest_tax import reconcile_rate_source,REVIEWED_PREDECESSOR,RECONCILIATION_KEY
 
 META="Your 'Sold To' address is in the EU but outside of Ireland: This applies to Italy. For business purposes Meta doesn't add VAT and you must self-assess at the applicable local rate. Your 'Sold To' address is in Ireland:"
 EU='<tr><td>IT</td><td>Italy</td><td>22</td><td>5 / 10</td><td>4</td><td>-</td></tr>'
@@ -79,5 +80,31 @@ class Tax(unittest.TestCase):
         with self.assertRaisesRegex(CostBlocked,'TaxRecipientOrOwnerChanged'):
             Budget(self.inbox,lambda:900000,rates).quote('MARKETING','390000000001')
         rates.assert_not_called()
+
+    def test_reviewed_migration_uses_fresh_rates_without_changing_policy_or_ledger(self):
+        self.baseline['transport_sha256']=REVIEWED_PREDECESSOR;self.enable()
+        current=dict(self.baseline,transport_sha256='b'*64)
+        check=Mock(return_value=current);rates=Mock(return_value=RATES)
+        result=reconcile_rate_source(self.inbox,self.wa,'390000000001',900000,check,rates)
+        self.assertEqual(result['state'],'official_rates_and_transport_reconciled')
+        self.assertIsNone(reconcile_rate_source(self.inbox,self.wa,'390000000001',900001,check,rates))
+        check.assert_called_once();rates.assert_called_once()
+        with self.inbox.db() as db:
+            self.assertEqual(json.loads(db.execute('SELECT value FROM settings WHERE key=?',(POLICY_KEY,)).fetchone()['value']),self.policy)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM digest_costs').fetchone()[0],0)
+
+    def test_unreviewed_predecessor_and_changed_rates_cannot_migrate(self):
+        self.enable();check=Mock(return_value=self.baseline);rates=Mock(return_value=RATES)
+        with self.assertRaisesRegex(CostBlocked,'UnreviewedTransportPredecessor'):
+            reconcile_rate_source(self.inbox,self.wa,'390000000001',900000,check,rates)
+        check.assert_not_called();rates.assert_not_called()
+        self.baseline['transport_sha256']=REVIEWED_PREDECESSOR
+        with self.inbox.db() as db:
+            db.execute('UPDATE settings SET value=? WHERE key=?',(json.dumps({'baseline':self.baseline}),RENEWAL_KEY))
+        check.return_value=dict(self.baseline,transport_sha256='b'*64)
+        rates.return_value=dict(RATES,MARKETING='0.07')
+        with self.assertRaisesRegex(CostBlocked,'MetaRatesChanged'):
+            reconcile_rate_source(self.inbox,self.wa,'390000000001',900000,check,rates)
+        with self.inbox.db() as db:self.assertIsNone(db.execute('SELECT 1 FROM settings WHERE key=?',(RECONCILIATION_KEY,)).fetchone())
 
 if __name__=='__main__':unittest.main()

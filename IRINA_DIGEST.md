@@ -53,13 +53,11 @@ Esiti non scritti su Dropbox ritentati dal database persistente.
 
 Template distinto `irina_digest_settimanale_v1`, lingua `it`, header DOCUMENT,
 body CONTROLUCE esatto verificato dal codice, categoria effettiva verificata.
-Non usare template IMAGE Italia Compete. Template attualmente PENDING.
-Richiesta persistente esplicita `prepare-activation` già registrata per mock-up v7:
-`/Projects/Digest Fred/Test/controluce-mockup-v7.pdf`, SHA-256
-`54cccfe9097166aa55a0cd943170ee02e9bdaf68cc8640f8479991416337d1d4`.
-Il loop attende approvazione; una sola prova marcata PROVA/MOCK-UP; attivazione
-solo dopo ricevuta delivered e costo nuovamente verificato. Nessuna edizione
-reale disponibile finché il produttore non deposita PDF e manifest verificati.
+Non usare template IMAGE Italia Compete. Il template è stato approvato e la
+prova distinta PROVA/MOCK-UP ha ricevuta delivered. L'edizione 001 del
+03/10/2026 ha ricevuta delivered; non ripetere né prova né edizione 001.
+La verifica di una nuova build richiede salute del commit esatto e report runtime;
+non equivale a una nuova prova WhatsApp autorizzata.
 
 Comandi operatore sul servizio esistente: `template`, `rates`, `test`, `status`,
 `activate`, `prepare-activation`, `tax-renewal` via `python irina_digest_admin.py`.
@@ -76,13 +74,23 @@ atomica prima del POST; prove/rifiuti/incerti compresi, nessun rimborso automati
 Limite 5 EUR per anno civile Europe/Rome. Il report registra la prenotazione,
 non una fattura Meta o prova del costo effettivamente addebitato.
 
-Fonte listino: documento pricing ufficiale Meta e card EUR ufficiale collegata.
-Lookup dinamico prioritario. Fallback verificato con hash documento+card e
-scadenza massima sette giorni. Rinnovo nel loop esistente due giorni prima
-scadenza, tentativi al massimo orari: riscarica fonte e card, verifica hash e
-prezzi contro policy; salva nuovo snapshot sette giorni in setting dedicato
-`digest_verified_rate_snapshot_v1`. Nessuna proroga su cambi, errori o evidenza
-già scaduta. Cambi link/listino richiedono nuova verifica della fonte corrente.
+Fonte corrente: calcolatore pubblico ufficiale WhatsApp, pagina
+https://business.whatsapp.com/products/platform-pricing e endpoint pubblico
+https://whatsappbusiness.com/wp-json/wab/v1/pricing . Ogni lettura verifica il
+contesto Italy/EUR e le categorie Marketing, Utility, Service della pagina,
+poi le tre quote e il primo scaglione dove presente. Non richiede credenziali
+nuove; eventuali nonce pubblici sono effimeri e non vengono conservati.
+Redirect, host, endpoint, contesto o prezzi inattesi bloccano la consegna.
+Le vecchie card CDN con firma scaduta restano solo evidenza storica.
+
+Rinnovo nel loop esistente due giorni prima scadenza, tentativi al massimo orari:
+lettura fresca di tutte le quote, confronto con policy e snapshot valido sette
+giorni in `digest_verified_rate_snapshot_v1`. Non accetta aumenti di prezzo.
+La sola migrazione autorizzata del 09/10/2026 è legata all'hash del trasporto
+precedente esatto: confronta nuovamente contesto fiscale e quote ufficiali,
+riconcilia il nuovo hash e sostituisce lo snapshot scaduto una sola volta.
+Non cambia scadenza fiscale, moltiplicatore, categoria, destinatario o prenotazioni.
+Qualsiasi successiva modifica del trasporto richiede una nuova verifica.
 Il comando esplicito `tax-renewal` abilita un secondo gate: rilegge il testo
 fiscale pubblico Meta applicabile all'Italia e la riga IVA italiana della fonte
 UE (22%), verifica valuta WABA EUR tramite API esistente, evidenza privata del
@@ -101,3 +109,8 @@ Cambi di testo fiscale/riga IVA, errori, valuta o trasporto diversi bloccano.
 `Esiti/Verifica-costi.json` espone scadenze, rinnovo abilitato ed eventuale blocco,
 senza dati identificativi. Il produttore può consultarlo prima del deposito.
 Non serve una nuova conferma settimanale del destinatario; servono evidenze valide.
+
+## Email separata, predisposta e disattivata
+
+Vedere `IRINA_DIGEST_EMAIL.md`. Stesso manifest e stessi byte PDF, coda e
+ricevute distinte; mai invio dell'edizione 001 da questo percorso.

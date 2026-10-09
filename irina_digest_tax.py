@@ -56,7 +56,7 @@ def public_evidence():
 def transport_hash():
     # A code change requires a fresh explicit operator review, never auto-attestation.
     root=Path(__file__).parent
-    names=['irina_digest_tax.py','irina_digest_costs.py','irina_digest.py',
+    names=['irina_digest_rate_source.py','irina_digest_tax.py','irina_digest_costs.py','irina_digest.py',
            'irina_digest_admin.py','irina_processor.py','irina_inbox.py']
     return hashlib.sha256(b''.join(name.encode()+b'\0'+(root/name).read_bytes() for name in names)).hexdigest()
 
@@ -128,3 +128,47 @@ def renew(inbox, wa, recipient, now, check=verified_context):
             (json.dumps(renewed),POLICY_KEY,policy_row['value'])).rowcount
         if not changed:raise CostBlocked('ConcurrentCostPolicyChange')
     return {'state':'tax_evidence_renewed','valid_until':renewed['valid_until']}
+
+
+REVIEWED_PREDECESSOR='68406faf70a170d24a315a36cd80e2056fe16483676dc7ac3725e0c346ad4f07'
+RECONCILIATION_KEY='digest_authorized_rate_source_update_v1'
+
+
+def reconcile_rate_source(inbox,wa,recipient,now,check=verified_context,rates=None):
+    """One reviewed migration, bound to the exact previously deployed transport.
+
+    Fresh official quotes replace the expired signed-URL evidence. Neither tax
+    expiry, recipient, category, multiplier nor the spending ledger is changed.
+    """
+    from irina_digest_costs import live_rates,RATE_SNAPSHOT_KEY
+    from datetime import datetime,timezone
+    from decimal import Decimal
+    with inbox.db() as db:
+        if db.execute('SELECT 1 FROM settings WHERE key=?',(RECONCILIATION_KEY,)).fetchone():return None
+        old=db.execute('SELECT value FROM settings WHERE key=?',(RENEWAL_KEY,)).fetchone()
+        row=db.execute('SELECT value FROM settings WHERE key=?',(POLICY_KEY,)).fetchone()
+    if not old or not row:raise CostBlocked('ReviewedTaxBaselineMissing')
+    baseline=json.loads(old['value'])['baseline'];policy=json.loads(row['value'])
+    if baseline.get('transport_sha256')!=REVIEWED_PREDECESSOR:
+        raise CostBlocked('UnreviewedTransportPredecessor')
+    if now>=float(policy['valid_until']):raise CostBlocked('GrossCostPolicyExpiredOrInvalid')
+    current=check(inbox,policy,wa,recipient)
+    if dict(current,transport_sha256=REVIEWED_PREDECESSOR)!=baseline:
+        raise CostBlocked('PublicTaxEvidenceOrBillingChanged')
+    quotes=(rates or live_rates)()
+    expected=policy['meta_rates_eur']
+    if set(quotes)!=set(expected) or any(Decimal(quotes[k])!=Decimal(expected[k]) for k in quotes):
+        raise CostBlocked('MetaRatesChanged')
+    snapshot={'source':'whatsapp_public_calculator','verified_at':datetime.fromtimestamp(now,timezone.utc).isoformat(),
+              'valid_until':datetime.fromtimestamp(now+7*86400,timezone.utc).isoformat(),'meta_rates_eur':quotes}
+    with inbox.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if db.execute('SELECT 1 FROM settings WHERE key=?',(RECONCILIATION_KEY,)).fetchone():return None
+        if db.execute('SELECT value FROM settings WHERE key=?',(POLICY_KEY,)).fetchone()['value']!=row['value']:
+            raise CostBlocked('ConcurrentCostPolicyChange')
+        changed=db.execute('UPDATE settings SET value=? WHERE key=? AND value=?',
+                           (json.dumps({'baseline':current}),RENEWAL_KEY,old['value'])).rowcount
+        if not changed:raise CostBlocked('ConcurrentTaxBaselineChange')
+        db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(RATE_SNAPSHOT_KEY,json.dumps(snapshot)))
+        db.execute('INSERT INTO settings VALUES (?,?)',(RECONCILIATION_KEY,json.dumps({'verified_at':now})))
+    return {'state':'official_rates_and_transport_reconciled','meta_rates_eur':quotes,'rates_valid_until':snapshot['valid_until']}

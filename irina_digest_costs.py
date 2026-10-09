@@ -94,20 +94,9 @@ def rate_url(data,snapshot,now):
 
 
 def live_rates(snapshot=None):
-    # No credentials or billing changes. A failed read blocks delivery.
-    with urllib.request.urlopen(SOURCE,timeout=20) as response:
-        if urllib.parse.urlparse(response.url).hostname!='developers.facebook.com':raise CostBlocked('InvalidRateSource')
-        data=response.read(2_000_001)
-    if len(data)>2_000_000:raise CostBlocked('RateSourceTooLarge')
-    snapshot=snapshot or json.loads(Path(__file__).with_name('irina_digest_rates.json').read_text())
-    url,expected_hash=rate_url(data,snapshot,time.time())
-    with urllib.request.urlopen(url,timeout=20) as response:
-        if not (urllib.parse.urlparse(response.url).hostname or '').endswith('.fbcdn.net'):raise CostBlocked('InvalidRateCardHost')
-        data=response.read(2_000_001)
-    if len(data)>2_000_000:raise CostBlocked('RateCardTooLarge')
-    if expected_hash and hashlib.sha256(data).hexdigest()!=expected_hash:
-        raise CostBlocked('MetaRateCardChanged')
-    return parse_rates(data)
+    from irina_digest_rate_source import current_rates,SourceError
+    try:return current_rates()
+    except SourceError as e:raise CostBlocked(str(e)) from None
 
 
 def rate_snapshot(inbox):

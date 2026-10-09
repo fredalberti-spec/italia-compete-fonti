@@ -104,6 +104,8 @@ class Digest:
         self.last_reports = {}
         self.now, self.enabled = now, enabled
         self.budget = Budget(self.p.inbox, now,wa=self.p.whatsapp)
+        from irina_digest_email import DigestEmail
+        self.email=DigestEmail(self.p.inbox,self.reader,self.client,now=now)
         with self.p.inbox.db() as db:
             db.execute("UPDATE digests SET state='uncertain', error='InterruptedSend' WHERE state='sending'")
             db.execute("UPDATE digest_tests SET state='uncertain', error='InterruptedSend' WHERE state='sending'")
@@ -205,6 +207,24 @@ class Digest:
         self.report(key)
 
     def step(self):
+        try:
+            self.email.status()
+            self.email.pending()
+        except Exception as exc:print(json.dumps({'event':'irina_digest_email_status_error','error':type(exc).__name__}),flush=True)
+        # Explicitly authorized source correction, bound to the reviewed old
+        # transport. Existing editions/outbox/receipts are never touched here.
+        from irina_digest_tax import reconcile_rate_source
+        if self.now()>=getattr(self,'next_reconciliation',0):
+            self.next_reconciliation=self.now()+3600
+            try:
+                reconciled=reconcile_rate_source(self.p.inbox,self.p.whatsapp,self.p.primary,self.now())
+                if reconciled:
+                    self.last_rate_result=reconciled
+                    print(json.dumps({'event':'irina_digest_rates',**reconciled}),flush=True)
+            except Exception as exc:
+                result={'blocked':str(exc) if isinstance(exc,CostBlocked) else type(exc).__name__}
+                self.last_rate_result=result
+                print(json.dumps({'event':'irina_digest_reconciliation',**result}),flush=True)
         from irina_digest_tax import renew
         try:
             refreshed=renew(self.p.inbox,self.p.whatsapp,self.p.primary,self.now())
@@ -272,6 +292,9 @@ class Digest:
                 continue
             try:
                 _, response = self.reader.files_download(entry.path_lower)
+                try:self.email.process(json.loads(response.content))
+                except Exception as exc:
+                    print(json.dumps({'event':'irina_digest_email_error','error':type(exc).__name__}),flush=True)
                 self.process(json.loads(response.content))
             except Exception as exc:
                 # Never print queue content, paths, phone numbers or SDK exception details.

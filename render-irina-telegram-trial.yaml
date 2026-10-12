@@ -1,0 +1,31 @@
+# Dedicated collector: approved 7.25 USD/month + taxes and traffic; credentials entered personally.
+# Never merge this into the existing render.yaml. Existing services are unchanged.
+services:
+  - type: worker
+    name: irina-telegram-collector
+    runtime: python
+    region: frankfurt
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: 'off'
+    buildCommand: python -m py_compile telegram_collector/run_trial.py telegram_collector/dropbox_refresh.py
+    startCommand: python telegram_collector/run_trial.py --live --text-only --persistent-access-approved
+    disk:
+      name: irina-telegram-collector-data
+      mountPath: /var/data/telegram-collector
+      sizeGB: 1
+    envVars:
+      - key: IRINA_TRIAL_DATA_DIR
+        value: /var/data/telegram-collector
+      - key: IRINA_TRIAL_BOT_USERNAME
+        value: irina_strategique_bot
+      - key: IRINA_TRIAL_OWNER_ID
+        sync: false
+      - key: IRINA_TRIAL_BOT_TOKEN
+        sync: false
+      - key: IRINA_TRIAL_DROPBOX_CLIENT_ID
+        value: invpatm0w41p8dz
+      - key: IRINA_TRIAL_DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: IRINA_TRIAL_BOOTSTRAP_SHA256
+        value: 634d21dfd4caaca54c2d77215e3f32eafcca7e67ce6f7d7a5c37864ea0df8d7b

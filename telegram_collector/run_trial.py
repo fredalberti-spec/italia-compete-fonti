@@ -9,11 +9,33 @@ import secrets
 import signal
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime,timezone
 from pathlib import Path
 from irina_telegram_trial import Trial,write
-from live_adapters import Telegram,Dropbox,Transcriber,RemoteError
+from live_adapters import Telegram,Dropbox,Transcriber,RemoteError,HTTP,NoRedirect
 from mirror import mirror
+
+class DropboxDiagnosticOpener:
+    """Only approved error categories, never descriptions, requests or token values."""
+    def __init__(self,opener=None):self.opener=opener or urllib.request.build_opener(NoRedirect())
+    def open(self,request,timeout):
+        operation='dropbox_token_refresh' if request.full_url=='https://api.dropboxapi.com/oauth2/token' else 'dropbox_file_request'
+        try:return self.opener.open(request,timeout=timeout)
+        except urllib.error.HTTPError as e:
+            category='other'
+            if operation=='dropbox_token_refresh':
+                try:
+                    body=e.read(16385)
+                    if len(body)<=16384:
+                        value=json.loads(body).get('error')
+                        if value in ('invalid_grant','invalid_client','invalid_scope','invalid_request','unsupported_grant_type'):
+                            category=value
+                except Exception:pass
+            print(json.dumps({'event':'dropbox_preflight_details','operation':operation,
+                'http_status':e.code,'error_category':category}),flush=True)
+            raise
 
 class Runner:
     def __init__(self,trial,telegram,dropbox,transcriber=None,budget_seconds=3600,*,text_only=False,suppress_existing_receipts=False):
@@ -173,7 +195,7 @@ def main():
             raise SystemExit('DedicatedBotIdentityMismatch')
         if refresh_mode:
             from dropbox_refresh import prepared_dropbox
-            dbx=prepared_dropbox(os.environ['IRINA_TRIAL_DROPBOX_CLIENT_ID'],os.environ['IRINA_TRIAL_DROPBOX_REFRESH_TOKEN'],persistent_access_approved=args.persistent_access_approved)
+            dbx=prepared_dropbox(os.environ['IRINA_TRIAL_DROPBOX_CLIENT_ID'],os.environ['IRINA_TRIAL_DROPBOX_REFRESH_TOKEN'],persistent_access_approved=args.persistent_access_approved,http=HTTP(DropboxDiagnosticOpener()))
         else:dbx=Dropbox(os.environ['IRINA_TRIAL_DROPBOX_TOKEN'],base=os.environ.get('IRINA_TRIAL_DROPBOX_BASE','/Irina Telegram'))
         token=None if args.text_only else os.environ.get('IRINA_TRIAL_OPENAI_TOKEN')
         ai=Transcriber(token) if token else None

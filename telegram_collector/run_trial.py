@@ -195,7 +195,18 @@ def main():
             raise SystemExit('DedicatedBotIdentityMismatch')
         if refresh_mode:
             from dropbox_refresh import prepared_dropbox
-            dbx=prepared_dropbox(os.environ['IRINA_TRIAL_DROPBOX_CLIENT_ID'],os.environ['IRINA_TRIAL_DROPBOX_REFRESH_TOKEN'],persistent_access_approved=args.persistent_access_approved,http=HTTP(DropboxDiagnosticOpener()))
+            app_id=os.environ['IRINA_TRIAL_DROPBOX_CLIENT_ID'];refresh=os.environ['IRINA_TRIAL_DROPBOX_REFRESH_TOKEN']
+            print(json.dumps({'event':'dropbox_config_shape',
+                'client_id_matches_expected':app_id.strip()=='invpatm0w41p8dz',
+                'client_id_outer_whitespace':app_id!=app_id.strip(),
+                'refresh_present':bool(refresh.strip()),
+                'refresh_outer_whitespace':refresh!=refresh.strip(),
+                'refresh_inner_whitespace':any(c.isspace() for c in refresh.strip()),
+                'refresh_printable_no_whitespace':bool(refresh.strip()) and all(33<=ord(c)<=126 for c in refresh.strip()),
+                'refresh_plausible_length':16<=len(refresh.strip())<=4096}),flush=True)
+            if app_id.strip()!='invpatm0w41p8dz':raise SystemExit('DedicatedDropboxClientMismatch')
+            dbx=prepared_dropbox(app_id.strip(),refresh.strip(),persistent_access_approved=args.persistent_access_approved,http=HTTP(DropboxDiagnosticOpener()))
+            refresh=None
         else:dbx=Dropbox(os.environ['IRINA_TRIAL_DROPBOX_TOKEN'],base=os.environ.get('IRINA_TRIAL_DROPBOX_BASE','/Irina Telegram'))
         token=None if args.text_only else os.environ.get('IRINA_TRIAL_OPENAI_TOKEN')
         ai=Transcriber(token) if token else None

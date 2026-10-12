@@ -161,10 +161,13 @@ def main():
     except OSError:raise SystemExit('TrialAlreadyRunning') from None
     os.umask(0o077)
     write(root/'trial.pid',str(os.getpid()).encode())
+    preflight_stage='local_state'
     try:
         trial=Trial(root,owner,secrets.token_urlsafe(32));trial.recover();trial.import_legacy_collection()
         tg=Telegram(os.environ['IRINA_TRIAL_BOT_TOKEN'],owner)
+        preflight_stage='telegram_webhook_check'
         if tg.webhook_info().get('url'):raise SystemExit('ExistingWebhookRefused_NoChangesMade')
+        preflight_stage='telegram_identity_check'
         identity=tg.identity()
         if (not identity.get('is_bot') or identity.get('username','').lower()!=os.environ['IRINA_TRIAL_BOT_USERNAME'].lstrip('@').lower()):
             raise SystemExit('DedicatedBotIdentityMismatch')
@@ -182,6 +185,7 @@ def main():
             with trial.db() as d:empty=d.execute('SELECT COUNT(*) FROM notes').fetchone()[0]==0
             if empty:
                 from bootstrap import apply
+                preflight_stage='dropbox_refresh_and_bootstrap'
                 apply(trial,dbx.download_control('/control/bootstrap-v1.json'),bootstrap_hash)
         runner=Runner(trial,tg,dbx,ai,text_only=args.text_only,suppress_existing_receipts=True)
         tg.http.cancelled=runner.stopped;dbx.http.cancelled=runner.stopped
@@ -190,7 +194,10 @@ def main():
         signal.signal(signal.SIGINT,lambda *_:runner.stopped.set())
         print('trial_started; awaiting_dropbox_verification; chat_scheduler_inactive',flush=True)
         runner.run(args.once)
-    except RemoteError:raise SystemExit('RemotePreflightFailed') from None
+    except RemoteError as e:
+        print(json.dumps({'event':'remote_preflight_failed','stage':preflight_stage,
+            'http_status':e.status,'uncertain':e.uncertain}),flush=True)
+        raise SystemExit('RemotePreflightFailed') from None
     finally:
         if refresh_mode and 'dbx' in locals():dbx.http.close()
         (root/'trial.pid').unlink(missing_ok=True);lock.close()

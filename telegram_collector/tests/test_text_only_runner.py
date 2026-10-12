@@ -33,6 +33,12 @@ class TextOnlyTests(unittest.TestCase):
   self.t.receive(json.dumps(self.update(2)).encode(),self.t.secret)
   with patch('run_trial.mirror',return_value={}):r.cycle();r.cycle()
   self.assertEqual(len(calls),1)
+  status=json.loads((self.t.root/'dropbox-staging/Irina Telegram/control/collector-status.json').read_text())
+  self.assertTrue(status['text_only']);self.assertFalse(status['paid_ai_enabled']);self.assertFalse(status['chat_schedule_active'])
+  with patch('run_trial.mirror',return_value={}):
+   restarted=Runner(self.t,TG(),DB(),text_only=True,suppress_existing_receipts=True);restarted.cycle()
+  next_status=json.loads((self.t.root/'dropbox-staging/Irina Telegram/control/collector-status.json').read_text())
+  self.assertNotEqual(status['instance_id'],next_status['instance_id']);self.assertEqual(len(calls),1)
   with self.t.db() as d:self.assertEqual(d.execute('SELECT receipt_state FROM notes WHERE seq=1').fetchone()[0],'pending')
  def test_existing_media_preserved_without_download(self):
   self.t.receive(json.dumps(self.update(media=True)).encode(),self.t.secret)

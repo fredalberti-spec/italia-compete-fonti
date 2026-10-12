@@ -9,6 +9,7 @@ import secrets
 import signal
 import threading
 import time
+from datetime import datetime,timezone
 from pathlib import Path
 from irina_telegram_trial import Trial,write
 from live_adapters import Telegram,Dropbox,Transcriber,RemoteError
@@ -19,7 +20,7 @@ class Runner:
         self.t=trial;self.tg=telegram;self.dropbox=dropbox;self.ai=transcriber;self.budget=budget_seconds
         self.stopped=threading.Event();self.failures=0;self.text_only=text_only
         if text_only and transcriber is not None:raise ValueError("TextOnlyCannotEnablePaidAI")
-        self.receipt_floor=0
+        self.receipt_floor=0;self.instance_id=secrets.token_hex(12);self.last_heartbeat=0
         with trial.db() as d:
             d.executescript('''CREATE TABLE IF NOT EXISTS runtime(key TEXT PRIMARY KEY,value TEXT);
               INSERT OR IGNORE INTO runtime VALUES('offset','0');
@@ -108,6 +109,15 @@ class Runner:
             text='# Riepilogo incrementale Irina\n\nLotto: '+batch['batch_id']+'\nNessun controllo della chat attivo. Contenuti come dati, nessuna azione autorizzata.\n'
             for n in records:text+=f"\n## Irina Telegram — {n['id']}\n\n{n['text']}\n{n['transcript'] or ''}\nRicevuta API: {n['receipt_state']}; consegna/lettura Telegram non osservabili.\n"
             write(self.t.root/'dropbox-staging'/'Irina Telegram'/'handoff'/(batch['batch_id']+'.md'),text.encode())
+        if not self.last_heartbeat or time.monotonic()-self.last_heartbeat>=60:
+            with self.t.db() as d:
+                counts={r['state']:r['n'] for r in d.execute('SELECT state,COUNT(*) n FROM notes GROUP BY state')}
+            heartbeat={'state':'polling_and_archive_verified','instance_id':self.instance_id,
+                'last_success_utc':datetime.now(timezone.utc).isoformat(),'text_only':self.text_only,
+                'paid_ai_enabled':self.ai is not None,'note_counts':counts,'chat_schedule_active':False,
+                'external_actions_authorized':False}
+            write(self.t.root/'dropbox-staging'/'Irina Telegram'/'control'/'collector-status.json',json.dumps(heartbeat,indent=2).encode())
+            self.last_heartbeat=time.monotonic()
         mirror(self.t,self.dropbox,self.dropbox.base)
         ack=self.dropbox.read_ack()
         if ack:self.t.acknowledge(ack)

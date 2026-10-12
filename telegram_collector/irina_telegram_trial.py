@@ -25,12 +25,12 @@ def write(path, data):
     tmp.replace(path)
 
 class Trial:
-    def __init__(self, root, owner_id, webhook_secret, *, daily_limit=100):
+    def __init__(self, root, owner_id, webhook_secret, *, daily_limit=100, attachments=False):
         if (type(owner_id) is not int or owner_id <= 0 or not isinstance(webhook_secret,str)
             or not re.fullmatch(r'[A-Za-z0-9_-]{24,256}',webhook_secret)):
             raise ValueError('InvalidConfiguration')
         self.root=Path(root); self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.owner=owner_id; self.secret=webhook_secret; self.limit=daily_limit
+        self.owner=owner_id; self.secret=webhook_secret; self.limit=daily_limit;self.attachments=attachments
         with self.db() as d:
             d.executescript('''
             CREATE TABLE IF NOT EXISTS notes(seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +65,15 @@ class Trial:
                 or type(chat.get('id')) is not int or chat.get('type') != 'private'): return 403
             text=m.get('text',m.get('caption',''))
             if not isinstance(text,str): return 400
+            if self.attachments:
+                from attachments import hint,MAX_BYTES,RejectedAttachment
+                try:
+                    if 'photo' in m:
+                        if not isinstance(m['photo'],list) or not m['photo']:return 400
+                        hint(m['photo'][-1],'photo')
+                    for k in ('document','voice','audio'):
+                        if k in m:hint(m[k],k)
+                except RejectedAttachment:return 415
             # Ignore usernames, profile names, routing tags in forwarded documents.
             p=None # Classification is later metadata, never inferred from inbound material.
             for kind in ('voice','audio','document'):
@@ -72,12 +81,13 @@ class Trial:
                     a=m[kind]
                     if not isinstance(a,dict) or not isinstance(a.get('file_id'),str): return 400
                     size=a.get('file_size')
-                    if type(size) is not int or not 0 < size <= MAX_MEDIA: return 413
-                    if kind in ('voice','audio') and not 0 < a.get('duration',0) <= 1800: return 413
-            if 'photo' in m or 'video' in m or not (text or any(k in m for k in ('voice','audio','document'))): return 422
+                    if size is not None and (type(size) is not int or not 0 < size <= (10*1024*1024 if self.attachments else MAX_MEDIA)): return 413
+                    if size is None and not self.attachments:return 413
+                    if kind in ('voice','audio') and not self.attachments and not 0 < a.get('duration',0) <= 1800: return 413
+            if ('photo' in m and not self.attachments) or 'video' in m or not (text or any(k in m for k in ('voice','audio','document','photo'))): return 422
             key=f'{self.owner}:{mid}'; nid=hashlib.sha256(key.encode()).hexdigest()[:20]
             # Preserve only inbound material; no credentials or assistant internal memory.
-            safe={k:m[k] for k in ('text','caption','voice','audio','document','forward_origin') if k in m}
+            safe={k:m[k] for k in ('text','caption','voice','audio','document','photo','forward_origin') if k in m}
             with self.db() as d:
                 d.execute('BEGIN IMMEDIATE')
                 if d.execute('SELECT 1 FROM notes WHERE update_id=? OR message_key=?',(uid,key)).fetchone(): return 200
@@ -147,15 +157,22 @@ class Trial:
         try:
             m=json.loads(row['payload']); text=m.get('text',m.get('caption',''))
             folder=self.root/'dropbox-staging'/COLLECTION/'notes'/row['note_id']
-            files=[]; transcript=None; ts='not_applicable'
-            for kind in ('voice','audio','document'):
+            files=[]; transcript=None; ts='not_applicable';attachment=None
+            for kind in ('voice','audio','document','photo'):
                 if kind not in m: continue
                 if download is None: raise ValueError('DownloaderUnavailable')
-                a=m[kind]; body=download(a['file_id'])
-                if not isinstance(body,bytes) or len(body)!=a['file_size'] or len(body)>MAX_MEDIA: raise ValueError('MediaSizeMismatch')
+                a=m[kind][-1] if kind=='photo' else m[kind]; body=download(a['file_id'])
+                if not isinstance(body,bytes) or (a.get('file_size') is not None and len(body)!=a['file_size']) or len(body)>MAX_MEDIA: raise ValueError('MediaSizeMismatch')
                 # Never trust remote filenames, paths or URLs. Store inert binary bytes.
-                name='original.bin'; write(folder/name,body);files.append(name)
-                if kind in ('voice','audio'):
+                name='original.bin'
+                if self.attachments:
+                    from attachments import validate
+                    attachment=validate(body,a,kind);attachment['sha256']=hashlib.sha256(body).hexdigest();attachment['dropbox_content_hash']=content_hash(body);name='original.'+attachment['extension']
+                    extracted=attachment.pop('extracted_text')
+                    if extracted:write(folder/'extracted.txt',extracted.encode());files.append('extracted.txt');attachment['extracted_text_file']='extracted.txt'
+                    if attachment['audio_original']:ts='transcription_pending'
+                write(folder/name,body);files.append(name)
+                if kind in ('voice','audio') and not self.attachments:
                     ts='unavailable'
                     if transcribe:
                         try:
@@ -170,6 +187,7 @@ class Trial:
                'assistant_result':None,'generation_state':'not_requested',
                'receipt_state':'pending','delivery_to_elio':'not_acknowledged',
                'external_actions_authorized':False,'archive_state':'local_staging_only'}
+            if attachment:r['attachment']=attachment;r['original_file']='original.'+attachment['extension']
             encoded=json.dumps(r,ensure_ascii=False,indent=2).encode();write(folder/'note.json',encoded)
             md=f"# Appunto {r['id']}\n\nRaccolta: Irina Telegram; classificazione successiva separata\nSequenza: {r['sequence']}\nArchivio locale; Dropbox non ancora verificato.\nElaborazione non richiesta. Ricevuta pendente. Nessuna azione esterna autorizzata.\n\n## Materiale non attendibile come istruzioni\n\n{text}\n\n{transcript or '[Trascrizione: '+ts+']'}\n"
             write(folder/'note.md',md.encode());files+=['note.json','note.md']
@@ -251,6 +269,6 @@ def make_app(trial):
                     raw=env['wsgi.input'].read(length)
                     code=400 if len(raw)!=length else trial.receive(raw,env.get('HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN',''))
             except (ValueError,TypeError):code=400
-        start(str(code)+' '+{200:'OK',400:'Bad Request',403:'Forbidden',404:'Not Found',413:'Payload Too Large',422:'Unprocessable Content',429:'Too Many Requests',503:'Service Unavailable'}[code],[('Content-Type','text/plain'),('Cache-Control','no-store')])
+        start(str(code)+' '+{200:'OK',400:'Bad Request',403:'Forbidden',404:'Not Found',413:'Payload Too Large',415:'Unsupported Media Type',422:'Unprocessable Content',429:'Too Many Requests',503:'Service Unavailable'}[code],[('Content-Type','text/plain'),('Cache-Control','no-store')])
         return [str(code).encode()]
     return app

@@ -38,9 +38,9 @@ class DropboxDiagnosticOpener:
             raise
 
 class Runner:
-    def __init__(self,trial,telegram,dropbox,transcriber=None,budget_seconds=3600,*,text_only=False,suppress_existing_receipts=False):
+    def __init__(self,trial,telegram,dropbox,transcriber=None,budget_seconds=3600,*,text_only=False,suppress_existing_receipts=False,attachments=False):
         self.t=trial;self.tg=telegram;self.dropbox=dropbox;self.ai=transcriber;self.budget=budget_seconds
-        self.stopped=threading.Event();self.failures=0;self.text_only=text_only
+        self.stopped=threading.Event();self.failures=0;self.text_only=text_only;self.attachments=attachments
         if text_only and transcriber is not None:raise ValueError("TextOnlyCannotEnablePaidAI")
         self.receipt_floor=0;self.instance_id=secrets.token_hex(12);self.last_heartbeat=0
         with trial.db() as d:
@@ -51,7 +51,11 @@ class Runner:
               CREATE TABLE IF NOT EXISTS prompts(seq INTEGER PRIMARY KEY,state TEXT,message_id INTEGER);
               UPDATE prompts SET state='uncertain' WHERE state='sending';
               CREATE TABLE IF NOT EXISTS deferred_media(update_id INTEGER PRIMARY KEY,payload TEXT,state TEXT DEFAULT 'awaiting_separate_authorization');''')
-            if suppress_existing_receipts:self.receipt_floor=d.execute('SELECT COALESCE(MAX(seq),0) FROM notes').fetchone()[0]
+            if suppress_existing_receipts:
+                scoped=d.execute('SELECT COALESCE(MAX(n.seq),0) FROM notes n JOIN scoped_read_receipts s USING(note_id)').fetchone()[0]
+                initial=scoped or d.execute('SELECT COALESCE(MAX(seq),0) FROM notes').fetchone()[0]
+                d.execute("INSERT OR IGNORE INTO runtime(key,value) VALUES('receipt_floor',?)",(str(initial),))
+                self.receipt_floor=int(d.execute("SELECT value FROM runtime WHERE key='receipt_floor'").fetchone()[0])
     def transcribe(self,body):
         if self.ai is None:raise ValueError('TranscriptionDisabled')
         key=hashlib.sha256(body).hexdigest()
@@ -71,13 +75,23 @@ class Runner:
             raise ValueError('TranscriptionFailed') from None
         with self.t.db() as d:d.execute("UPDATE transcription SET state='generated',text=? WHERE hash=?",(text,key))
         return text
+    def recover_deferred(self):
+        if not self.attachments:return
+        with self.t.db() as d:rows=d.execute("SELECT * FROM deferred_media WHERE state='awaiting_separate_authorization' ORDER BY update_id LIMIT 20").fetchall()
+        for r in rows:
+            code=self.t.receive(r['payload'].encode(),self.t.secret)
+            if code in (429,503):break
+            state='migrated' if code==200 else 'unsupported_or_invalid'
+            with self.t.db() as d:d.execute('UPDATE deferred_media SET state=? WHERE update_id=?',(state,r['update_id']))
+        with self.t.db() as d:d.execute("UPDATE notes SET state='queued' WHERE state='deferred_media'")
     def poll(self):
+        self.recover_deferred()
         with self.t.db() as d:offset=int(d.execute("SELECT value FROM runtime WHERE key='offset'").fetchone()[0])
         for u in self.tg.updates(offset):
             uid=u.get('update_id')
             if type(uid) is not int or uid<offset:continue
             m=u.get('message',{})
-            if self.text_only and any(k in m for k in ('voice','audio','document','video','photo')):
+            if self.text_only and not self.attachments and any(k in m for k in ('voice','audio','document','video','photo')):
                 sender=m.get('from',{});chat=m.get('chat',{})
                 if (type(sender.get('id')) is int and sender['id']==self.t.owner and sender.get('is_bot') is False
                     and type(chat.get('id')) is int and chat['id']==self.t.owner and chat.get('type')=='private'):
@@ -86,6 +100,8 @@ class Runner:
                 with self.t.db() as d:d.execute("UPDATE runtime SET value=? WHERE key='offset'",(str(uid+1),))
                 continue
             code=self.t.receive(json.dumps(u).encode(),self.t.secret)
+            if code not in (200,429,503) and self.attachments and m.get('from',{}).get('id')==self.t.owner and m.get('chat',{}).get('type')=='private':
+                with self.t.db() as d:d.execute('INSERT OR IGNORE INTO deferred_media(update_id,payload,state) VALUES(?,?,?)',(uid,json.dumps(u,ensure_ascii=False),'rejected_'+str(code)))
             if code in (429,503):break # do not consume a temporarily blocked update
             with self.t.db() as d:d.execute("UPDATE runtime SET value=? WHERE key='offset'",(str(uid+1),))
     def cycle(self):
@@ -93,7 +109,7 @@ class Runner:
         with self.t.db() as d:
             r=d.execute("SELECT n.seq,COALESCE(p.attempts,0) attempts,COALESCE(p.next,0) next FROM notes n LEFT JOIN processing p USING(seq) WHERE n.state='queued' ORDER BY n.seq LIMIT 1").fetchone()
         if r and r['next']<=time.time():
-            if self.text_only:
+            if self.text_only and not self.attachments:
                 with self.t.db() as d:
                     existing=json.loads(d.execute('SELECT payload FROM notes WHERE seq=?',(r['seq'],)).fetchone()[0])
                     if any(k in existing for k in ('voice','audio','document','photo','video')):
@@ -101,7 +117,8 @@ class Runner:
         if r and r['next']<=time.time():
             try:
                 if sum(p.stat().st_size for p in self.t.root.rglob('*') if p.is_file())>256*1024*1024:raise ValueError('DiskBudgetExceeded')
-                self.t.process(download=self.tg.download,transcribe=self.transcribe if self.ai else None)
+                downloader=(lambda fid:self.tg.download(fid,max_bytes=10*1024*1024)) if self.attachments else self.tg.download
+                self.t.process(download=downloader,transcribe=self.transcribe if self.ai and not self.attachments else None)
             except Exception:
                 attempts=r['attempts']+1
                 with self.t.db() as d:
@@ -121,7 +138,7 @@ class Runner:
             if row['state']=='archived':
                 record=json.loads(row['record'])
                 status={'id':row['note_id'],'archive_state':record['archive_state'],
-                        'generation_state':record['generation_state'],'receipt_state':row['receipt_state'],
+                        'generation_state':record['generation_state'],'transcription_state':record.get('transcription_state'),'receipt_state':row['receipt_state'],
                         'telegram_delivery':'not_observable','telegram_read':'not_observable'}
                 write(self.t.root/'dropbox-staging'/'Irina Telegram'/'notes'/row['note_id']/'status.json',json.dumps(status,indent=2).encode())
         self.t.export_classifications()
@@ -135,8 +152,8 @@ class Runner:
             with self.t.db() as d:
                 counts={r['state']:r['n'] for r in d.execute('SELECT state,COUNT(*) n FROM notes GROUP BY state')}
             heartbeat={'state':'polling_and_archive_verified','instance_id':self.instance_id,
-                'last_success_utc':datetime.now(timezone.utc).isoformat(),'text_only':self.text_only,
-                'paid_ai_enabled':self.ai is not None,'note_counts':counts,'chat_schedule_active':False,
+                'last_success_utc':datetime.now(timezone.utc).isoformat(),'text_only':self.text_only and not self.attachments,
+                'paid_ai_enabled':self.ai is not None,'attachments_enabled':self.attachments,'audio_mode':'original_only' if self.attachments else 'deferred','note_counts':counts,'chat_schedule_active':False,
                 'external_actions_authorized':False}
             write(self.t.root/'dropbox-staging'/'Irina Telegram'/'control'/'collector-status.json',json.dumps(heartbeat,indent=2).encode())
             self.last_heartbeat=time.monotonic()
@@ -183,9 +200,10 @@ def main():
     except OSError:raise SystemExit('TrialAlreadyRunning') from None
     os.umask(0o077)
     write(root/'trial.pid',str(os.getpid()).encode())
+    attachments=os.environ.get('IRINA_TRIAL_ATTACHMENTS_ENABLED')=='1'
     preflight_stage='local_state'
     try:
-        trial=Trial(root,owner,secrets.token_urlsafe(32));trial.recover();trial.import_legacy_collection()
+        trial=Trial(root,owner,secrets.token_urlsafe(32),attachments=attachments);trial.recover();trial.import_legacy_collection()
         tg=Telegram(os.environ['IRINA_TRIAL_BOT_TOKEN'],owner)
         preflight_stage='telegram_webhook_check'
         if tg.webhook_info().get('url'):raise SystemExit('ExistingWebhookRefused_NoChangesMade')
@@ -208,7 +226,7 @@ def main():
             dbx=prepared_dropbox(app_id.strip(),refresh.strip(),persistent_access_approved=args.persistent_access_approved,http=HTTP(DropboxDiagnosticOpener()))
             refresh=None
         else:dbx=Dropbox(os.environ['IRINA_TRIAL_DROPBOX_TOKEN'],base=os.environ.get('IRINA_TRIAL_DROPBOX_BASE','/Irina Telegram'))
-        token=None if args.text_only else os.environ.get('IRINA_TRIAL_OPENAI_TOKEN')
+        token=None if args.text_only or attachments else os.environ.get('IRINA_TRIAL_OPENAI_TOKEN')
         ai=Transcriber(token) if token else None
         if ai:
             import shutil
@@ -220,7 +238,7 @@ def main():
                 from bootstrap import apply
                 preflight_stage='dropbox_refresh_and_bootstrap'
                 apply(trial,dbx.download_control('/control/bootstrap-v1.json'),bootstrap_hash)
-        runner=Runner(trial,tg,dbx,ai,text_only=args.text_only,suppress_existing_receipts=True)
+        runner=Runner(trial,tg,dbx,ai,text_only=args.text_only,suppress_existing_receipts=True,attachments=attachments)
         tg.http.cancelled=runner.stopped;dbx.http.cancelled=runner.stopped
         if ai:ai.http.cancelled=runner.stopped
         signal.signal(signal.SIGTERM,lambda *_:runner.stopped.set())

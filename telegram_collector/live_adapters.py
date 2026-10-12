@@ -63,15 +63,15 @@ class Telegram:
         r=self.call('getUpdates',{'offset':offset,'timeout':0,'limit':20,'allowed_updates':['message']},True)
         if not isinstance(r,list):raise RemoteError()
         return r
-    def download(self,file_id):
+    def download(self,file_id,max_bytes=20*1024*1024):
         r=self.call('getFile',{'file_id':file_id},True)
         path=r.get('file_path','');size=r.get('file_size')
         # Reject URLs, traversal, encoded path segments and empty paths.
         if (not path or path.startswith('/') or '..' in PurePosixPath(path).parts
             or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-' for c in path)
-            or type(size) is not int or not 0<size<=20*1024*1024):raise RemoteError()
-        body=self.http.request('https://api.telegram.org/file/bot'+self.token+'/'+path,retry=True,limit=20*1024*1024)
-        if len(body)!=size:raise RemoteError()
+            or (size is not None and (type(size) is not int or not 0<size<=max_bytes))):raise RemoteError()
+        body=self.http.request('https://api.telegram.org/file/bot'+self.token+'/'+path,retry=True,limit=max_bytes)
+        if not body or (size is not None and len(body)!=size):raise RemoteError()
         return body
     def send(self,recipient,text):
         if recipient!=self.owner:raise ValueError('RecipientNotOwner')

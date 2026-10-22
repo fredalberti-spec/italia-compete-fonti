@@ -1,8 +1,11 @@
+from tests.offline_guard import install
+install()
+
 import json
 import os
 from unittest.mock import patch
 import unittest
-import test_irina_email as fixtures
+from tests import test_irina_email as fixtures
 EID = fixtures.EID
 from irina_email_review import reconcile
 

@@ -1,3 +1,6 @@
+from tests.offline_guard import install
+install()
+
 import tempfile
 import json
 import unittest

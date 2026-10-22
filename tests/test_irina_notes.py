@@ -1,3 +1,6 @@
+from tests.offline_guard import install
+install()
+
 import json
 import tempfile
 import unittest
@@ -7,7 +10,7 @@ from unittest.mock import patch
 from irina_notes import NotesIndex, ROOT, eligible, wants_notes, content_hash
 from irina_processor import Processor, Intelligence
 from irina_inbox import Inbox
-import test_irina_inbox as f
+from tests import test_irina_inbox as f
 
 
 class NotesTests(unittest.TestCase):

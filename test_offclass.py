@@ -1,3 +1,6 @@
+from tests.offline_guard import install
+install()
+
 """OFF CLASS ingestion: protection, source resolution and retry behaviour."""
 import asyncio
 import json

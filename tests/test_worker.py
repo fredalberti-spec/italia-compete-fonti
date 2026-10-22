@@ -1,3 +1,6 @@
+from tests.offline_guard import install
+install()
+
 import hashlib
 from datetime import datetime, timezone
 import tempfile

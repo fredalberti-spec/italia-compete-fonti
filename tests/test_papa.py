@@ -1,3 +1,6 @@
+from tests.offline_guard import install
+install()
+
 import sqlite3
 import asyncio
 import json

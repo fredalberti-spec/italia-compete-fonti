@@ -35,6 +35,7 @@ class Notices(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = self.tmp.name + '/ledger.sqlite3'
         self.db = sqlite3.connect(self.path)
+        papa.setup(self.db)
         wa.setup(self.db)
         self.events = []
         self.report = lambda event, **data: self.events.append((event, data))
@@ -51,6 +52,12 @@ class Notices(unittest.IsolatedAsyncioTestCase):
 
     async def send(self, graph, day=DAY, papers=('corriere',), slot='08:30'):
         return await wa.notify(self.db, day, slot, papers, self.report, graph)
+
+    async def test_late_morning_notice_still_once_per_day(self):
+        graph = FakeGraph()
+        self.assertEqual(await self.send(graph, slot='10:10'), 'accepted')
+        self.assertEqual(await self.send(graph, slot='13:00'), 'accepted')
+        self.assertEqual(len(graph.posts), 1)
 
     async def test_intro_once_pinned_recipient_and_partial_exactness(self):
         graph = FakeGraph()
@@ -233,3 +240,4 @@ class Notices(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

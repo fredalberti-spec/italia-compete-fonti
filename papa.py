@@ -18,7 +18,8 @@ START_DATE = '2026-09-27'
 MONTHS = ('gennaio febbraio marzo aprile maggio giugno luglio agosto settembre '
           'ottobre novembre dicembre').split()
 PAPERS = ('corriere', 'giorno_legnano')
-SEND_TIMES = ('08:30', '09:30')
+SEND_TIMES = tuple(f'{minute // 60:02d}:{minute % 60:02d}'
+                   for minute in range(8 * 60 + 30, 13 * 60 + 1, 5))
 CHECK_INTERVAL = 300
 
 
@@ -180,7 +181,7 @@ async def run_day(client, db, day, report, slot='08:30'):
     with db:
         db.execute('INSERT INTO papa_runs VALUES (?,?,?)', (key, slot, result))
         db.execute('INSERT OR REPLACE INTO papa_days VALUES (?,?)', (key, result))
-    report('papa_daily_result', day=key, slot=slot, final=(slot == '09:30'),
+    report('papa_daily_result', day=key, slot=slot, final=(not missing or slot == '13:00'),
            result=result, sent=sent,
            present=sorted(present), missing=missing, recipient=DESTINATION,
            whatsapp='check_following_whatsapp_event' if papa_whatsapp.enabled() else 'disabled')
@@ -189,12 +190,13 @@ async def run_day(client, db, day, report, slot='08:30'):
 def check_window(now):
     local = now.astimezone(ROME)
     return (local.date().isoformat() >= START_DATE
-            and (8, 0) <= (local.hour, local.minute) <= (9, 30))
+            and (8, 0) <= (local.hour, local.minute) <= (13, 0))
 
 
 def scheduled_slot(now):
     local = now.astimezone(ROME)
-    slot = local.strftime('%H:%M')
+    # Keep each five-minute slot open until the next one, including after restart.
+    slot = local.replace(minute=local.minute // 5 * 5).strftime('%H:%M')
     return slot if check_window(local) and slot in SEND_TIMES else None
 
 
@@ -202,6 +204,10 @@ async def run_scheduled(client, db, now, report):
     slot = scheduled_slot(now)
     if slot:
         day = now.astimezone(ROME).date()
+        completed = db.execute('SELECT result FROM papa_days WHERE day=?',
+                               (day.isoformat(),)).fetchone()
+        if completed and completed[0] == 'complete':
+            return
         try:
             await run_day(client, db, day, report, slot)
         finally:
@@ -276,11 +282,42 @@ async def service(client, db, stopped, report):
     try:
         await resolve(client)
         report('papa_api_ready', recipient=DESTINATION, source=SOURCE,
-               times=list(SEND_TIMES), check_window=['08:00', '09:30'],
+               times=list(SEND_TIMES), check_window=['08:00', '13:00'],
                check_interval_seconds=CHECK_INTERVAL,
                timezone='Europe/Rome', start_date=START_DATE)
     except Exception as exc:
         report('papa_preflight_error', error_type=type(exc).__name__)
+    # An explicit same-day recovery request uses this client's exclusive session.
+    # It adds a new slot; existing attempts and delivery reservations stay intact.
+    import json
+    from pathlib import Path
+    request = Path(papa_whatsapp.os.environ.get('DATA_DIR', '/var/data')) / 'papa_recovery_day'
+    if request.exists():
+        day = datetime.now(ROME).date()
+        recovery = json.loads(request.read_text())
+        if recovery.get('day') == day.isoformat():
+            try:
+                source, dest = await resolve(client)
+                candidates = await recent_papers(client, source, day)
+                for paper, message_id in recovery['source_messages'].items():
+                    message = await client.get_messages(source, ids=message_id)
+                    if (eligible(message, day) != paper or paper not in candidates
+                            or candidates[paper].id != message_id):
+                        raise RuntimeError('PapaRecoverySourceMismatch')
+                    report('papa_recovery_source_verified', day=day.isoformat(), paper=paper,
+                           source_message=message_id, filename=message.file.name,
+                           document_id=message.document.id, size=message.file.size)
+                report('papa_recovery_ledger', day=day.isoformat(), deliveries=db.execute(
+                    'SELECT paper,source_message,state,destination_message FROM papa_deliveries WHERE day=?',
+                    (day.isoformat(),)).fetchall())
+                await run_day(client, db, day, report, '13:00')
+                _, dest = await resolve(client)
+                present = await recent_papers(client, dest, day, outgoing=True)
+                await papa_whatsapp.notify(db, day, '13:00', present, report)
+                report('papa_recovery_result', day=day.isoformat(), present=sorted(present))
+                request.rename(request.with_suffix('.processed'))
+            except Exception as exc:
+                report('papa_recovery_error', day=day.isoformat(), error_type=type(exc).__name__)
     while not stopped.is_set():
         now = datetime.now(ROME)
         clock = asyncio.get_running_loop().time()
@@ -313,3 +350,4 @@ async def service(client, db, stopped, report):
             await asyncio.wait_for(stopped.wait(), timeout=10)
         except asyncio.TimeoutError:
             pass
+

@@ -123,6 +123,9 @@ async def notify(db, day, slot, present, report, graph=None, *, retry_at=None):
     from papa import SEND_TIMES
     if slot not in SEND_TIMES and not retry_allowed:
         raise ValueError('WhatsAppInvalidSlot')
+    if graph is None and day != datetime.now(ZoneInfo('Europe/Rome')).date():
+        report('papa_whatsapp_blocked', day=key, slot=slot, reason='not_current_day')
+        return 'blocked'
     papers = sorted(set(present))
     if not papers or any(p not in TITLES for p in papers):
         return 'no_verified_papers'

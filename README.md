@@ -8,18 +8,23 @@ non genera né pubblica post.
 
 `papa.py` usa il client Telegram già autenticato dal worker, sullo stesso disco
 persistente, senza browser, nuovi login o copie della sessione. È abilitata per
-default (`PAPA_ENABLED=false` la disabilita). Dal 27/09/2026 controlla la
-disponibilità ogni 5 minuti dalle 08:00 alle 09:30 Europe/Rome e inoltra solo
-negli appuntamenti delle **08:30 e 09:30**, con scansione aggiornata prima di
-ogni invio. Alle 09:30 invia solo ciò che manca: il risultato parziale delle
-08:30 non chiude più la giornata. Entrambi gli appuntamenti sono persistiti
-in SQLite e condividono il registro anti-duplicati; i risultati della versione
-precedente restano validi per il primo appuntamento, incluso quello di oggi.
+default (`PAPA_ENABLED=false` la disabilita). I controlli partono alle 08:00
+Europe/Rome; dalle **08:30 alle 13:00** tenta gli invii mancanti ogni cinque
+minuti. Si ferma prima soltanto quando tutti i quotidiani risultano completati.
+Ogni slot resta aperto per cinque minuti per tollerare ritardi e riavvii.
+Gli slot e tutti i tentativi sono persistiti in SQLite; i vecchi risultati
+delle 08:30 e 09:30 restano conservati e non bloccano gli slot successivi.
+Gli esiti incerti vengono riconciliati dalla cronologia, senza reinvio.
 
-Il ciclo si attiva ogni 10 secondi. Un riavvio durante il minuto previsto può
-recuperare l'appuntamento; fuori da quei due minuti non parte alcun invio di
-recupero. Errori e tentativi incerti restano registrati e non vengono reinviati.
-I controlli intermedi sono di sola lettura e non scaricano documenti.
+Il ciclo si attiva ogni dieci secondi. Prima delle 08:30 i controlli sono di sola
+lettura. Il fuso Europe/Rome gestisce automaticamente l'ora legale.
+Per un recupero esplicitamente autorizzato della data corrente, una richiesta
+JSON in `/var/data/papa_recovery_day` contiene `day` e `source_messages`
+(mappa testata → ID messaggio verificato). Al riavvio viene elaborata dallo
+stesso client del worker sotto il lock esclusivo esistente. Verifica identità,
+protezioni, edizioni, ID fonte, ledger e cronologia; usa lo slot aggiuntivo
+13:00 senza cancellare i precedenti e archivia la richiesta come `.processed`.
+Non accetta recuperi automatici di date precedenti.
 
 Unico destinatario: utente privato Papà, ID 8836718451; unica fonte: Part 2,
 ID -1001295597629. Inoltra esclusivamente Corriere della Sera nazionale e
@@ -30,13 +35,12 @@ messaggio e un solo destinatario; non espande album e non scarica file.
 Prima di ciascun invio controlla la cronologia del destinatario. SQLite conserva
 ogni tentativo prima dell'invio, un random_id e l'ID del messaggio verificato.
 Un esito incerto viene cercato in cronologia ma non reinviato automaticamente.
-La protezione Telegram all'inoltro viene rispettata. Nessun avviso WhatsApp è
-incluso: l'integrazione WhatsApp Business resta da configurare separatamente.
+La protezione Telegram all'inoltro viene rispettata. L'avviso WhatsApp di Irina è gestito separatamente come descritto sotto.
 
 Log: `papa_api_ready` certifica accesso a fonte e identità destinatario;
 `papa_forward_verified` certifica la presenza del singolo documento;
 `papa_availability` registra i controlli intermedi;
-`papa_daily_result` riporta presenti/mancanti e lo slot, con `final=true` alle 09:30; `papa_result_uncertain` richiede
+`papa_daily_result` riporta presenti/mancanti e lo slot, con `final=true` al completamento o alle 13:00; `papa_result_uncertain` richiede
 verifica. Un deploy riuscito, da solo, non certifica l'invio dei quotidiani.
 Test: `python -m unittest discover -s tests -p 'test_papa.py' -v`.
 
@@ -128,14 +132,14 @@ rileggono la chat Papà con il client Telegram già esistente e riprovano il
 preflight dei modelli. Le verifiche orarie sono persistite in SQLite; qualsiasi
 prenotazione/invio WhatsApp del giorno interrompe i tentativi, anche in caso di
 esito incerto o rifiuto. La finestra scade automaticamente a mezzanotte e non
-cambia i due appuntamenti quotidiani delle 08:30 e 09:30. Se Meta approva un
+cambia la finestra quotidiana 08:30–13:00. Se Meta approva un
 modello, l'avviso resta soggetto al limite di uno al giorno e al controllo del
 testo esatto, del mittente e del destinatario.
 
 `papa_whatsapp.py` aggiunge un avviso via WhatsApp Cloud API, dopo una nuova
 lettura della chat Telegram destinataria con il client già attivo. Nessun invio
 WhatsApp se non è verificato presente almeno un quotidiano corretto del giorno.
-Gli invii Telegram restano alle 08:30 e 09:30 Europe/Rome.
+Gli invii Telegram seguono gli slot ogni cinque minuti tra 08:30 e 13:00 Europe/Rome.
 
 Configurazione Render (mai nel repository):
 - `PAPA_WHATSAPP_ENABLED=true` per abilitare gli avvisi.
@@ -152,12 +156,12 @@ senza ripetere consecutivamente la stessa variante. La variabile contiene solo
 le testate effettivamente presenti, mai il giornale mancante.
 
 `papa_whatsapp_notices` nello stesso SQLite su disco persistente limita a un
-avviso al giorno anche tra i due slot e dopo un riavvio. La prenotazione viene
+avviso al giorno anche tra gli slot e dopo un riavvio. La prenotazione viene
 salvata prima del POST. Timeout o crash lasciano uno stato incerto che non viene
 reinviato. Un'introduzione incerta blocca anche gli avvisi successivi finché non
 viene riconciliata manualmente. Un rifiuto esplicito non viene ritentato nello
 stesso giorno. Un modello non ancora approvato non prenota il giorno e può
-essere ricontrollato al secondo slot. Nessun fallback a WhatsApp Web.
+essere ricontrollato a uno slot successivo finché i PDF non sono completati. Nessun fallback a WhatsApp Web.
 
 Log: `papa_whatsapp_ready`, `papa_whatsapp_accepted`, `papa_whatsapp_blocked`,
 `papa_whatsapp_rejected`, `papa_whatsapp_uncertain`.

@@ -120,7 +120,8 @@ async def notify(db, day, slot, present, report, graph=None, *, retry_at=None):
     retry_allowed = (retry_at is not None
                      and retry_at.astimezone(ZoneInfo('Europe/Rome')).date() == day
                      and retry_slot(retry_at) == slot)
-    if slot not in ('08:30', '09:30') and not retry_allowed:
+    from papa import SEND_TIMES
+    if slot not in SEND_TIMES and not retry_allowed:
         raise ValueError('WhatsAppInvalidSlot')
     papers = sorted(set(present))
     if not papers or any(p not in TITLES for p in papers):
@@ -207,3 +208,4 @@ async def notify(db, day, slot, present, report, graph=None, *, retry_at=None):
                template=name, introduction=(name == INTRO), message_id=message_id,
                delivery='not_verified', recipient='papa_verified')
     return state
+

@@ -59,6 +59,13 @@ class Notices(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.send(graph, slot='13:00'), 'accepted')
         self.assertEqual(len(graph.posts), 1)
 
+    async def test_real_api_rejects_historical_day_before_network(self):
+        with patch.object(wa, 'Graph') as graph:
+            self.assertEqual(await wa.notify(self.db, date(2000, 1, 1), '08:30',
+                                             ('corriere',), self.report), 'blocked')
+            graph.assert_not_called()
+        self.assertEqual(self.events[-1][1]['reason'], 'not_current_day')
+
     async def test_intro_once_pinned_recipient_and_partial_exactness(self):
         graph = FakeGraph()
         self.assertEqual(await self.send(graph, papers=('giorno_legnano',)), 'accepted')

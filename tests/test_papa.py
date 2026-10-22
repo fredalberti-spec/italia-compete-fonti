@@ -1,4 +1,8 @@
 import sqlite3
+import asyncio
+import json
+import tempfile
+from pathlib import Path
 import unittest
 from datetime import date, datetime
 from types import SimpleNamespace as Obj
@@ -129,7 +133,7 @@ class Flow(unittest.IsolatedAsyncioTestCase):
         client = FakeClient([self.giorno])
         await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, 8, 30, tzinfo=papa.ROME), self.report)
         client.sources.append(self.corriere)
-        for hour, minute in ((8, 45), (9, 0), (9, 29)):
+        for hour, minute in ((8, 31), (8, 32), (8, 34)):
             await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, hour, minute, tzinfo=papa.ROME), self.report)
         self.assertEqual([r.id for r in client.requests], [[3]])
         papa.setup(self.db)
@@ -173,7 +177,7 @@ class Flow(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_early_intermediate_or_late_sends(self):
         client = FakeClient([self.corriere, self.giorno])
-        for hour, minute in ((7, 59), (8, 0), (8, 29), (8, 31), (9, 29), (9, 31), (12, 0)):
+        for hour, minute in ((7, 59), (8, 0), (8, 29), (13, 1), (14, 0)):
             await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, hour, minute, tzinfo=papa.ROME), self.report)
         self.assertEqual(client.requests, [])
 
@@ -185,6 +189,54 @@ class Flow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events[-1][1]['sent'], [])
         self.assertEqual(self.events[-1][1]['result'], 'complete')
 
+    async def test_late_arrivals_after_old_final_and_restart(self):
+        client = FakeClient([])
+        for hour, minute in ((8, 30), (9, 30)):
+            await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, hour, minute, tzinfo=papa.ROME), self.report)
+        self.assertFalse(self.events[-1][1]['final'])
+        client.sources.append(self.giorno)
+        papa.setup(self.db)
+        await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, 9, 56, tzinfo=papa.ROME), self.report)
+        self.assertEqual([r.id for r in client.requests], [[3]])
+        client.sources.append(self.corriere)
+        await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, 10, 11, tzinfo=papa.ROME), self.report)
+        self.assertEqual([r.id for r in client.requests], [[3], [1]])
+        self.assertTrue(self.events[-1][1]['final'])
+        count = len(self.events)
+        await papa.run_scheduled(client, self.db, datetime(2026, 9, 27, 12, 55, tzinfo=papa.ROME), self.report)
+        self.assertEqual(len(self.events), count)
+
+    async def test_final_at_1300_and_recovery_preserves_old_slots(self):
+        client = FakeClient([])
+        for slot in ('08:30', '09:30'):
+            await papa.run_day(client, self.db, DAY, self.report, slot)
+        client.sources.extend([self.corriere, self.giorno])
+        await papa.run_day(client, self.db, DAY, self.report, '13:00')
+        self.assertEqual(len(client.requests), 2)
+        self.assertTrue(self.events[-1][1]['final'])
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM papa_runs').fetchone()[0], 3)
+        await papa.run_day(client, self.db, DAY, self.report, '13:00')
+        self.assertEqual(len(client.requests), 2)
+
+    async def test_explicit_recovery_uses_existing_client_and_keeps_ledger(self):
+        client = FakeClient([])
+        for slot in ('08:30', '09:30'):
+            await papa.run_day(client, self.db, DAY, self.report, slot)
+        client.sources.extend([self.corriere, self.giorno])
+        with tempfile.TemporaryDirectory() as root:
+            request = Path(root) / 'papa_recovery_day'
+            request.write_text(json.dumps({'day': DAY.isoformat(),
+                                          'source_messages': {'corriere': 1, 'giorno_legnano': 3}}))
+            stopped = asyncio.Event()
+            stopped.set()
+            with patch.dict(papa.papa_whatsapp.os.environ, {'DATA_DIR': root}), patch.object(papa, 'datetime', wraps=datetime) as clock:
+                clock.now.return_value = datetime(2026, 9, 27, 16, 0, tzinfo=papa.ROME)
+                await papa.service(client, self.db, stopped, self.report)
+            self.assertFalse(request.exists())
+            self.assertTrue(request.with_suffix('.processed').exists())
+        self.assertEqual([r.id for r in client.requests], [[1], [3]])
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM papa_runs').fetchone()[0], 3)
+
 
 class Schedule(unittest.TestCase):
     def test_rome_window_and_slots_across_daylight_saving(self):
@@ -193,7 +245,7 @@ class Schedule(unittest.TestCase):
             at = datetime(2026, month, day, utc_hour, 30, tzinfo=timezone.utc)
             self.assertEqual(papa.scheduled_slot(at), '08:30')
             self.assertEqual(papa.scheduled_slot(at.replace(hour=utc_hour+1)), '09:30')
-        for hour, minute, expected in ((7, 59, False), (8, 0, True), (9, 30, True), (9, 31, False)):
+        for hour, minute, expected in ((7, 59, False), (8, 0, True), (9, 30, True), (9, 31, True), (13, 0, True), (13, 1, False)):
             self.assertEqual(papa.check_window(datetime(2026, 9, 28, hour, minute, tzinfo=papa.ROME)), expected)
         self.assertFalse(papa.check_window(datetime(2026, 9, 26, 8, 30, tzinfo=papa.ROME)))
 
@@ -214,3 +266,4 @@ class Recipient(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

@@ -74,6 +74,11 @@ class FakeClient:
 
 class Flow(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # Production shells can inherit live WhatsApp credentials. Telegram-flow
+        # tests must never call the real notice API with an in-memory ledger.
+        self.whatsapp_disabled = patch.object(papa.papa_whatsapp, 'enabled', return_value=False)
+        self.whatsapp_disabled.start()
+        self.addCleanup(self.whatsapp_disabled.stop)
         self.db = sqlite3.connect(':memory:')
         papa.setup(self.db)
         self.events = []
